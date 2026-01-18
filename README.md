@@ -57,4 +57,4 @@ This extension is especially useful for Students and also useful when you can’
 ## 📦 Installation (Dev)
 1. Clone the repo.  
 2. Load `chrome://extensions` → "Load unpacked" → choose the extension folder.  
-3. Test on YouTube or any website with <video>.
+3. Test on YouTube or any website which has video play (it perfectly works on every website).
