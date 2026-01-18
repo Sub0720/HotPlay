@@ -1,6 +1,6 @@
 # 🚀 HotPlay
 
-HotPlay is a lightweight Chrome extension that lets you control YouTube or any website with <video> using keyboard shortcuts **while hovering** — no clicking required. Designed for speed, focus, and clean UX.
+HotPlay is a lightweight Chrome extension that lets you control YouTube or any website with < video > using keyboard shortcuts **while hovering** — no clicking required. Designed for speed, focus, and clean UX.
 
 ---
 
@@ -48,7 +48,7 @@ HotPlay is a lightweight Chrome extension that lets you control YouTube or any w
 
 ## 🧠 How It Works
 
-HotPlay listens for keyboard input only when your mouse is hovering over YouTube elements or any website with <video> (thumbnails, video player, Shorts). This enables instant control without clicks while avoiding page-level conflicts. The Spacebar is blocked by default to prevent unwanted scrolling.
+HotPlay listens for keyboard input only when your mouse is hovering over YouTube elements or any website with < video > (thumbnails, video player, Shorts). This enables instant control without clicks while avoiding page-level conflicts. The Spacebar is blocked by default to prevent unwanted scrolling.
 
 ---
 
