@@ -1,0 +1,84 @@
+.vc-overlay{
+  position: absolute;
+  z-index: 2147483647;
+  pointer-events: none;
+  padding: 8px 12px;
+  background: linear-gradient(135deg, rgba(0,0,0,0.85), rgba(0,0,0,0.6));
+  color: #fff;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.6);
+  transform: translateY(6px) scale(.98);
+  opacity: 0;
+  transition: opacity .22s ease, transform .22s ease;
+}
+.vc-overlay.vc-show{ opacity: 1; transform: translateY(0) scale(1); }
+.vc-overlay .vc-icon{ font-size: 18px; opacity: 0.95; }
+.vc-overlay .vc-text{ font-size: 13px; line-height: 1; opacity: 0.95; }
+
+/* dynamic glow helper (inline styles set by script) */
+.vc-overlay.dynamic-glow{ transition: box-shadow .28s ease, border-color .28s ease, transform .18s ease; }
+
+/* kinds */
+.vc-overlay.vol{ background: linear-gradient(135deg, rgba(10,10,70,0.9), rgba(0,0,0,0.6)); }
+.vc-overlay.seek{ background: linear-gradient(135deg, rgba(70,10,10,0.9), rgba(0,0,0,0.6)); }
+.vc-overlay.speed{ background: linear-gradient(135deg, rgba(10,70,10,0.9), rgba(0,0,0,0.6)); }
+.vc-overlay.play{ background: linear-gradient(135deg, rgba(30,30,30,0.95), rgba(0,0,0,0.6)); }
+.vc-overlay.mute{ background: linear-gradient(135deg, rgba(80,10,80,0.9), rgba(0,0,0,0.6)); }
+.vc-overlay.percent{ background: linear-gradient(135deg, rgba(30,40,80,0.9), rgba(0,0,0,0.6)); }
+
+/* Sleek, compact HUD badge */
+.overlay-num {
+    position: absolute;
+    top: 40px; /* Positioned near the top */
+    left: 50%;
+    transform: translateX(-50%);
+    
+    /* Compact Styling */
+    background: rgba(15, 15, 15, 0.85); /* Deep dark matte */
+    color: #ffffff;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-family: 'Inter', -apple-system, sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    
+    /* High-end finish */
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+    
+    /* Quick fade animation */
+    animation: quickFade 0.6s ease-out forwards;
+}
+
+@keyframes quickFade {
+    0% { opacity: 0; transform: translateX(-50%) translateY(-5px); }
+    15% { opacity: 1; transform: translateX(-50%) translateY(0); }
+    80% { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+/* boosted (volume >100%) */
+.vc-overlay.boost{
+  box-shadow: 0 10px 40px rgba(0,160,0,0.18);
+  border: 1px solid rgba(0,160,0,0.25);
+}
+
+/* locked indicator */
+.vc-overlay.locked{
+  box-shadow: 0 10px 30px rgba(255,200,0,0.12);
+  border: 1px solid rgba(255,200,0,0.18);
+}
+
+/* small responsive tweaks */
+@media (max-width: 480px){
+  .vc-overlay{ font-size: 12px; padding: 6px 10px; }
+  .vc-overlay .vc-icon{ font-size: 16px; }
+}
