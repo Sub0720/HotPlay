@@ -1,2 +1,58 @@
-# HotPlay
-HotPlay is a lightweight, power-user extension that gives keyboard controls for any website that has &lt;video>. Use shortcuts directly while hovering over thumbnails, Shorts, or the player — no clicking required. Works in the mini-player, theatre, and fullscreen modes. Built for fast navigation, better volume control, and a cleaner playback workflow.
+# 🚀 HotPlay
+
+HotPlay is a power-user Chrome extension that lets you control YouTube using keyboard shortcuts **while hovering** — no clicking required. Designed for speed, focus, and clean UX.
+
+---
+
+## ✨ Key Features
+
+- 🎯 Control playback with **hover + keyboard**
+- 📺 Works on **Videos, Shorts, Mini-player, Theatre & Fullscreen**
+- 🖥️ Visual overlay showing active shortcuts & live feedback
+- 🔊 Smart volume icons: **🔊 → 🔉 → 🔈 → 🔇**
+- ⚡ Playback speed control in **±0.25x** steps
+- 🧷 Temporary markers, undo last action & focus-lock mode
+- ⛔ Spacebar blocked by default to prevent scrolling (optional)
+
+---
+
+## ⌨️ Default Keyboard Shortcuts
+
+> These are the default mappings after installing HotPlay.
+
+### Playback
+- **K** — Play / Pause (hover-based)  
+- **Space** — Disabled by default (made to act like `K`)  
+- **M** — Mute / Unmute (🔇 / 🔊)
+
+### Volume
+- **Arrow Up** — Volume up (upto 200%)  
+- **Arrow Down** — Volume down
+
+### Seeking
+- **← Left Arrow** — Seek backward (configurable)  
+- **→ Right Arrow** — Seek forward (configurable)
+
+### Speed
+- **Shift + .** — Increase speed by **0.25x** (max **4x**)  
+- **Shift + ,** — Decrease speed by **0.25x**
+
+### Power Features
+- **B** — Temporary marker (press again to jump back - Works like a Bookmark)  
+- **Z** — Undo last action (seek / speed / play-pause)  
+- **X** — Focus Lock (locks controls to a specific area)
+
+> When volume exceeds **100%** (if enabled), HotPlay visually marks boosted volume and supports up to **200%**.
+
+---
+
+## 🧠 How It Works
+
+HotPlay listens for keyboard input only when your mouse is hovering over YouTube elements (thumbnails, video player, Shorts). This enables instant control without clicks while avoiding page-level conflicts. The Spacebar is blocked by default to prevent unwanted scrolling.
+
+---
+
+## 📦 Installation (Dev)
+1. Clone the repo.  
+2. Load `chrome://extensions` → "Load unpacked" → choose the extension folder.  
+3. Test on YouTube or any website with <video>.
