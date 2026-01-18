@@ -19,6 +19,7 @@ HotPlay is a lightweight Chrome extension that lets you control YouTube or any w
 ## ⌨️ Default Keyboard Shortcuts
 
 > These are the default mappings after installing HotPlay.
+
 > You can change the shortcuts in content.js. The popup doesn’t save shortcut changes, and I’m not fixing it because I’m lazy.
 
 ### Playback
