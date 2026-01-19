@@ -53,6 +53,7 @@ HotPlay listens for keyboard input only when your mouse is hovering over YouTube
 
 This extension is especially useful for Students and also useful when you can’t control a video, such as when hovering over YouTube thumbnails, where you can watch the video but can’t skip it. It works on any website that plays videos, including Instagram.
 
+If the extension is not working for some reason, or if it shows an error in chrome://extensions, simply remove it and reinstall it in your browser.
 ---
 
 ## 📦 Installation (Dev)
