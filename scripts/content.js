@@ -40,6 +40,11 @@ function ensureVideoState(video) {
 
 // Volume booster: up to 200% using WebAudio GainNode
 function ensureAudioNodes(video) {
+    try {
+
+    // Guard: if audio node creation failed previously, skip re-creating nodes to avoid breaking playback.
+    if (window.__HotPlay_audioNodeCreationFailed) { return; }
+
     const st = ensureVideoState(video);
     try {
         if (st.gainNode) return st;
@@ -74,6 +79,12 @@ function ensureAudioNodes(video) {
         console.warn('VC: audio nodes error', e);
     }
     return st;
+
+    } catch (e) {
+        console.warn('VC: audio node creation failed', e);
+        window.__HotPlay_audioNodeCreationFailed = true;
+        return;
+    }
 }
 
 function applyVolumePercent(video, pct) {
