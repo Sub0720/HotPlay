@@ -55,6 +55,8 @@ This extension is especially useful for Students and also useful when you can’
 
 If the extension is not working for some reason, or if it shows an error in chrome://extensions, simply remove it and reinstall it in your browser.
 
+Deleted Previous Releases due to some issues.
+
 ---
 
 ## 📦 Installation (Dev)
