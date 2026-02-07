@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "HotPlay",
-  "version": "1.0.9",
+  "version": "1.1.1",
   "description": "Control Any Video faster: keyboard shortcuts that work over thumbnails, Shorts, mini-player, theatre & fullscreen, with visual overlays and instant actions.",
   "permissions": ["storage","scripting","activeTab"],
   "host_permissions": ["<all_urls>"],
