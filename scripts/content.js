@@ -1,5 +1,5 @@
-// scripts/content.js - generalized for all sites with video elements
-// FINAL: adds site lock (X), volume boost up to 200%, B marker, Z undo, and top-center overlays
+// scripts/content.js - HotPlay v1.1.1
+// Video controls: lock (X), volume boost, B marker, Z undo, brightness, quality (YouTube), chapters, frame step, F1 help
 
 const STORAGE_KEY = 'vcConfig';
 
@@ -19,17 +19,20 @@ const DEFAULT_CONFIG = {
     settings: {
         volume: 40,   // stored as 0..200 percent (default 40%)
         speed: 1.0,
-        muted: false
+        muted: false,
+        brightness: 100  // 50..150, applied as CSS filter (100 = normal)
     }
 };
 
 let config = null;
 let activeOverlay = null;
 
-// ---------------- Feature additions: Lock, Volume Boost, Marker (B), Undo (Z) ----------------
+// ---------------- Feature additions: Lock, Volume Boost, Marker (B), Undo (Z), Brightness, Help ----------------
 const vcState = new WeakMap(); // per-video state: { audioCtx, sourceNode, gainNode, history:[], marker: null }
 let siteLocked = false;
-let lockedVideoRef = null; // DOM element reference when siteLocked
+let lockedVideoRef = null;
+let helpOverlayVisible = false;
+const FRAME_STEP_DEFAULT = 1 / 30; // ~33ms for 30fps when frame rate unknown
 
 function ensureVideoState(video) {
     if (!vcState.has(video)) {
@@ -129,6 +132,20 @@ function getVolumePercent(video) {
     }
 }
 
+// Brightness: CSS filter on video only (50..150%)
+function applyBrightness(video, percent) {
+    percent = Math.max(50, Math.min(150, Math.round(percent)));
+    config.settings.brightness = percent;
+    try {
+        video.style.filter = percent === 100 ? 'none' : `brightness(${percent / 100})`;
+    } catch (e) {}
+    saveConfig();
+}
+
+function getBrightness(video) {
+    return config.settings.brightness != null ? config.settings.brightness : 100;
+}
+
 function formatTime(secs) {
     if (!isFinite(secs) || secs < 0) return '0:00';
     secs = Math.floor(secs);
@@ -188,9 +205,342 @@ function undoLast(video) {
     } else if (act.type === 'volume') {
         applyVolumePercent(video, act.prev);
         showOverlay('vol', video, act.prev);
+    } else if (act.type === 'reset') {
+        if (act.prevSpeed != null) video.playbackRate = act.prevSpeed;
+        if (act.prevVol != null) applyVolumePercent(video, act.prevVol);
+        if (act.prevBrightness != null) applyBrightness(video, act.prevBrightness);
+        config.settings.speed = act.prevSpeed;
+        config.settings.volume = act.prevVol;
+        config.settings.brightness = act.prevBrightness;
+        saveConfig();
+        showOverlay('play', video, 'Reset undone');
     } else {
         showOverlay('play', video, 'Undone');
     }
+}
+
+// ----- YouTube: Quality (Shift+; / Shift+') -----
+function isYouTube() {
+    try { return /youtube\.com|youtu\.be/i.test(window.location.href); } catch (e) { return false; }
+}
+
+// YouTube player controls can be in document or inside #movie_player shadow root
+function queryYT(selector) {
+    const el = document.querySelector(selector);
+    if (el) return el;
+    const host = document.querySelector('#movie_player');
+    if (host && host.shadowRoot) return host.shadowRoot.querySelector(selector);
+    return null;
+}
+function queryYTAll(selector) {
+    const list = document.querySelectorAll(selector);
+    if (list.length) return list;
+    const host = document.querySelector('#movie_player');
+    if (host && host.shadowRoot) return host.shadowRoot.querySelectorAll(selector);
+    return [];
+}
+
+// Open main settings panel (gear)
+function openYouTubeSettingsPanel() {
+    const gear = queryYT('.ytp-settings-button');
+    if (gear) {
+        gear.click();
+        return true;
+    }
+    return false;
+}
+
+// Click the "Quality" row to open the quality submenu (Quality is usually last in the list)
+function openYouTubeQualitySubmenu() {
+    const panel = queryYT('.ytp-panel-menu') || queryYT('.ytp-settings-menu');
+    if (!panel) return false;
+    const items = panel.querySelectorAll('.ytp-menuitem');
+    if (!items.length) return false;
+    const qualityRow = Array.from(items).find(el => /quality|qualité|calidad|qualität|画质/i.test(el.textContent || '')) || items[items.length - 1];
+    qualityRow.click();
+    return true;
+}
+
+// up = true → decrease quality (next in list); up = false → increase quality (previous in list)
+function clickYouTubeQualityOption(up) {
+    const menu = queryYT('.ytp-quality-menu') || queryYT('.ytp-panel-menu');
+    if (!menu) return false;
+    const items = menu.querySelectorAll('.ytp-menuitem[role="menuitem"], .ytp-menuitem');
+    if (!items.length) return false;
+    const current = menu.querySelector('.ytp-menuitem[aria-checked="true"]') || menu.querySelector('.ytp-menuitem[aria-selected="true"]');
+    let idx = current ? Array.from(items).indexOf(current) : -1;
+    if (up) {
+        if (idx < 0) return false;
+        if (idx >= items.length - 1) return false;
+        idx = idx + 1;
+    } else {
+        if (idx < 0) idx = 0;
+        else if (idx <= 0) return false;
+        else idx = idx - 1;
+    }
+    const target = items[idx];
+    if (target) target.click();
+    return !!target;
+}
+
+// Hide all settings/quality panels (main menu + submenus) so quality change is invisible
+const YT_PANEL_HIDE_STYLE = [
+    '.ytp-panel { opacity: 0 !important; transition: none !important; pointer-events: auto !important; }',
+    '.ytp-settings-panel { opacity: 0 !important; transition: none !important; pointer-events: auto !important; }',
+    '.ytp-panel-menu { opacity: 0 !important; transition: none !important; pointer-events: auto !important; }',
+    '.ytp-panel-container { opacity: 0 !important; transition: none !important; pointer-events: auto !important; }',
+    '.ytp-popup { opacity: 0 !important; transition: none !important; pointer-events: auto !important; }',
+    '[class*="ytp-panel"] { opacity: 0 !important; transition: none !important; pointer-events: auto !important; }'
+].join(' ');
+const YT_PANEL_HIDE_ID = 'vc-hide-yt-panel';
+
+function hideYouTubePanelUI() {
+    try {
+        if (document.getElementById(YT_PANEL_HIDE_ID)) return;
+        const style = document.createElement('style');
+        style.id = YT_PANEL_HIDE_ID;
+        style.textContent = YT_PANEL_HIDE_STYLE;
+        document.head.appendChild(style);
+        const host = document.querySelector('#movie_player');
+        if (host && host.shadowRoot && !host.shadowRoot.getElementById(YT_PANEL_HIDE_ID)) {
+            const srStyle = document.createElement('style');
+            srStyle.id = YT_PANEL_HIDE_ID;
+            srStyle.textContent = YT_PANEL_HIDE_STYLE;
+            host.shadowRoot.appendChild(srStyle);
+        }
+    } catch (e) {}
+}
+
+function showYouTubePanelUI() {
+    try {
+        const el = document.getElementById(YT_PANEL_HIDE_ID);
+        if (el) el.remove();
+        const host = document.querySelector('#movie_player');
+        if (host && host.shadowRoot) {
+            const srEl = host.shadowRoot.getElementById(YT_PANEL_HIDE_ID);
+            if (srEl) srEl.remove();
+        }
+    } catch (e) {}
+}
+
+function changeYouTubeQuality(up) {
+    if (!isYouTube()) return Promise.resolve(false);
+    hideYouTubePanelUI();
+    if (!openYouTubeSettingsPanel()) {
+        showYouTubePanelUI();
+        return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+        setTimeout(() => {
+            if (!openYouTubeQualitySubmenu()) {
+                const back = queryYT('.ytp-settings-button');
+                if (back) back.click();
+                setTimeout(() => { showYouTubePanelUI(); resolve(false); }, 350);
+                return;
+            }
+            setTimeout(() => {
+                const ok = clickYouTubeQualityOption(up);
+                setTimeout(() => {
+                    const back = queryYT('.ytp-settings-button');
+                    if (back) back.click();
+                    // Restore UI only after panel has fully closed so the popup never flashes
+                    setTimeout(() => {
+                        showYouTubePanelUI();
+                        resolve(ok);
+                    }, 350);
+                }, 200);
+            }, 400);
+        }, 400);
+    });
+}
+
+// ----- Generic quality (any site): find quality/settings UI and cycle -----
+const QUALITY_LEVEL_TEXT = /auto|(\d{3,4})\s*[pP]|hd|sd|high|low|best|worst/i;
+
+function collectRoots() {
+    const roots = [document];
+    try {
+        const walk = (root) => {
+            const all = root.querySelectorAll('*');
+            for (const el of all) {
+                if (el.shadowRoot) roots.push(el.shadowRoot);
+            }
+        };
+        walk(document);
+        const host = document.querySelector('#movie_player');
+        if (host && host.shadowRoot) {
+            if (!roots.includes(host.shadowRoot)) roots.push(host.shadowRoot);
+            host.shadowRoot.querySelectorAll('*').forEach(el => { if (el.shadowRoot) roots.push(el.shadowRoot); });
+        }
+    } catch (e) {}
+    return roots;
+}
+
+function isClickable(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return false;
+    const tag = (el.tagName || '').toLowerCase();
+    const role = (el.getAttribute && el.getAttribute('role')) || '';
+    const ok = ['button', 'a', 'menuitem', 'option', 'listbox'].includes(role) ||
+        ['button', 'a'].includes(tag) || el.onclick || el.getAttribute?.('onclick') ||
+        (el.closest && (el.closest('[role="menu"]') || el.closest('[role="listbox"]') || el.closest('button') || el.closest('a')));
+    return !!ok;
+}
+
+function qualityLevelOrder(text) {
+    if (!text) return -1;
+    const m = text.match(/(\d{3,4})\s*[pP]/);
+    if (m) return -parseInt(m[1], 10); // higher res first (1080 -> -1080)
+    if (/auto/i.test(text)) return 0;
+    if (/hd|high/i.test(text)) return -720;
+    if (/sd|low/i.test(text)) return -360;
+    return -999;
+}
+
+function findQualityOptions(roots) {
+    const options = [];
+    for (const root of roots) {
+        try {
+            const all = root.querySelectorAll('*');
+            for (const el of all) {
+                const text = (el.textContent || '').trim();
+                if (text.length >= 2 && text.length < 60 && QUALITY_LEVEL_TEXT.test(text) && isClickable(el)) {
+                    options.push({ el, text, order: qualityLevelOrder(text) });
+                }
+            }
+        } catch (e) {}
+    }
+    const seen = new Set();
+    return options.filter(({ el, text }) => {
+        const k = text.replace(/\s/g, '').toLowerCase();
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+    });
+}
+
+function findQualityOrSettingsTrigger(roots) {
+    const triggers = [];
+    const qualityWords = /quality|qualit[ée]|calidad|画质|resolution|settings|gear|cog|设置/i;
+    for (const root of roots) {
+        try {
+            const buttons = root.querySelectorAll('button, [role="button"], a, [role="menuitem"], [class*="setting"], [class*="quality"], [aria-label]');
+            for (const el of buttons) {
+                const text = (el.textContent || '').trim();
+                const label = (el.getAttribute && el.getAttribute('aria-label')) || '';
+                const combined = (text + ' ' + label).toLowerCase();
+                if (qualityWords.test(combined) && isClickable(el)) triggers.push(el);
+            }
+        } catch (e) {}
+    }
+    return triggers;
+}
+
+function changeQualityGeneric(up) {
+    const roots = collectRoots();
+    const options = findQualityOptions(roots);
+    if (options.length === 0) {
+        const triggers = findQualityOrSettingsTrigger(roots);
+        if (triggers.length > 0) {
+            triggers[0].click();
+            return new Promise((resolve) => {
+                setTimeout(() => {
+                    const options2 = findQualityOptions(collectRoots());
+                    const ok = clickGenericQualityOption(options2, up);
+                    resolve(ok);
+                }, 500);
+            });
+        }
+        return Promise.resolve(false);
+    }
+    return Promise.resolve(clickGenericQualityOption(options, up));
+}
+
+function clickGenericQualityOption(options, up) {
+    if (!options.length) return false;
+    options.sort((a, b) => a.order - b.order); // highest quality first (most negative)
+    const current = options.findIndex(o => {
+        const el = o.el;
+        return el.getAttribute?.('aria-checked') === 'true' || el.getAttribute?.('aria-selected') === 'true' ||
+            el.classList?.contains('active') || el.classList?.contains('selected') || el.getAttribute?.('data-selected') === 'true';
+    });
+    let idx = current >= 0 ? current : 0;
+    if (up) {
+        if (idx >= options.length - 1) return false;
+        idx = idx + 1;
+    } else {
+        if (idx <= 0) return false;
+        idx = idx - 1;
+    }
+    const target = options[idx]?.el;
+    if (target) {
+        target.click();
+        return true;
+    }
+    return false;
+}
+
+function changeVideoQuality(up) {
+    if (isYouTube()) return changeYouTubeQuality(up);
+    return changeQualityGeneric(up);
+}
+
+// ----- YouTube: Chapters (Shift+← / Shift+→) -----
+function getYouTubeChapterTimes() {
+    const times = [];
+    try {
+        const chipBar = document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="chapters"] .ytd-macro-markers-list-renderer, ytd-macro-markers-list-renderer');
+        const links = chipBar ? chipBar.querySelectorAll('a.ytd-macro-markers-list-item-renderer, [class*="macro-markers"] a') : [];
+        links.forEach(a => {
+            const href = a.getAttribute('href') || '';
+            const t = href.match(/[?&]t=(\d+)/);
+            if (t) times.push(parseInt(t[1], 10));
+        });
+        if (times.length) return [...new Set(times)].sort((a, b) => a - b);
+        const desc = document.querySelector('#description-inline-expander a[href*="&t="], #description a[href*="&t="]');
+        if (desc) {
+            const match = desc.getAttribute('href').match(/[?&]t=(\d+)/);
+            if (match) times.push(parseInt(match[1], 10));
+        }
+        const segments = document.querySelectorAll('ytd-macro-markers-list-item-renderer, [class*="macro-markers-list-item"]');
+        segments.forEach(el => {
+            const a = el.querySelector('a[href*="t="]');
+            if (a) {
+                const m = a.getAttribute('href').match(/[?&]t=(\d+)/);
+                if (m) times.push(parseInt(m[1], 10));
+            }
+        });
+        return [...new Set(times)].sort((a, b) => a - b);
+    } catch (e) {}
+    return times;
+}
+
+function goToPrevChapter(video) {
+    const times = getYouTubeChapterTimes();
+    const t = video.currentTime;
+    const prev = times.filter(x => x < t - 1).pop();
+    if (prev != null) {
+        video.currentTime = prev;
+        pushHistory(video, { type: 'seek', prev: t, next: prev });
+        showOverlay('seekBack', video, Math.round(t - prev));
+        return true;
+    }
+    return false;
+}
+
+function goToNextChapter(video) {
+    const times = getYouTubeChapterTimes();
+    const t = video.currentTime;
+    const next = times.find(x => x > t + 1);
+    if (next != null) {
+        const prevTime = video.currentTime;
+        video.currentTime = next;
+        pushHistory(video, { type: 'seek', prev: prevTime, next });
+        showOverlay('seek', video, Math.round(next - prevTime));
+        return true;
+    }
+    return false;
 }
 
 // Lock toggle (X): prevent switching active video by hover/click until unlocked
@@ -279,11 +629,12 @@ function toggleSiteLock(video) {
     setupGlobalKeyHandler();
     monitorVideos();
 
-    // periodic enforcement to counter site resets
+    // periodic enforcement to counter site resets (only when tab visible to reduce lag)
     setInterval(() => {
+        if (document.visibilityState !== 'visible') return;
         const v = pickTargetVideo();
         if (v) enforceSettings(v);
-    }, 1500);
+    }, 3500);
 
     console.log('Video Commander: initialized');
 })();
@@ -343,7 +694,9 @@ function showOverlay(kind, video, value) {
             percent: '🔢',
             locked: '🔒',
             unlocked: '🔓',
-            pin: '📌'
+            pin: '📌',
+            brightness: '☀',
+            quality: '📐'
         };
 
         const overlay = document.createElement('div');
@@ -372,6 +725,8 @@ function showOverlay(kind, video, value) {
             case 'pause': text = 'Paused'; break;
             case 'percent': text = `Marker: ${value}%`; break;
             case 'pin': text = (typeof value === 'string' && value.length>0) ? value : 'Marker set'; break;
+            case 'brightness': text = `Brightness: ${value}%`; break;
+            case 'quality': text = typeof value === 'string' ? value : 'Quality'; break;
             default: text = String(value || '');
         }
         txt.textContent = text;
@@ -451,15 +806,116 @@ function showOverlay(kind, video, value) {
     } catch (e) { console.warn('Overlay failed', e); }
 }
 
+// ----- Help Center (F1) -----
+function getHelpShortcutsList() {
+    const bindings = config?.shortcuts || DEFAULT_CONFIG.shortcuts;
+    return [
+        { key: 'F1', desc: 'Show this help' },
+        { key: 'K', desc: 'Play / Pause' },
+        { key: 'Space', desc: 'Play / Pause' },
+        { key: 'M', desc: 'Mute / Unmute' },
+        { key: '↑', desc: 'Volume up' },
+        { key: '↓', desc: 'Volume down' },
+        { key: 'J', desc: 'Seek −10 s' },
+        { key: 'L', desc: 'Seek +10 s' },
+        { key: '←', desc: 'Seek −5 s' },
+        { key: '→', desc: 'Seek +5 s' },
+        { key: 'Shift + .', desc: 'Speed up' },
+        { key: 'Shift + ,', desc: 'Speed down' },
+        { key: '0–9', desc: 'Jump to 0%–90%' },
+        { key: 'B', desc: 'Set marker / jump to marker' },
+        { key: 'Z', desc: 'Undo last action' },
+        { key: 'X', desc: 'Focus lock on video' },
+        { key: 'Shift + R', desc: 'Reset speed, volume, brightness' },
+        { key: 'Z (after reset)', desc: 'Undo reset' },
+        { key: '−', desc: 'Decrease brightness (video only)' },
+        { key: '=', desc: 'Increase brightness (video only)' },
+        { key: ";", desc: 'Decrease video quality' },
+        { key: "'", desc: 'Increase video quality' },
+        { key: 'Shift + ;', desc: 'Increase video quality' },
+        { key: "Shift + '", desc: 'Decrease video quality' },
+        { key: 'Shift + ←', desc: 'Previous chapter' },
+        { key: 'Shift + →', desc: 'Next chapter' },
+        { key: '/', desc: 'Frame-by-frame (one frame)' }
+    ];
+}
+
+function showHelpOverlay() {
+    if (helpOverlayVisible) {
+        hideHelpOverlay();
+        return;
+    }
+    const wrap = document.getElementById('vc-help-overlay');
+    if (wrap) {
+        wrap.classList.add('vc-show');
+        helpOverlayVisible = true;
+        return;
+    }
+    const overlay = document.createElement('div');
+    overlay.id = 'vc-help-overlay';
+    overlay.setAttribute('aria-label', 'HotPlay shortcuts');
+    const panel = document.createElement('div');
+    panel.id = 'vc-help-panel';
+    panel.innerHTML = '<h2>HotPlay Shortcuts</h2>';
+    const section = document.createElement('div');
+    section.className = 'vc-help-section';
+    const rows = getHelpShortcutsList();
+    rows.forEach(({ key, desc }) => {
+        const row = document.createElement('div');
+        row.className = 'vc-help-row';
+        row.innerHTML = `<span class="vc-help-key">${key}</span><span class="vc-help-desc">${desc}</span>`;
+        section.appendChild(row);
+    });
+    panel.appendChild(section);
+    const footer = document.createElement('div');
+    footer.className = 'vc-help-footer';
+    footer.textContent = 'Press F1 or click outside to close. Extension shortcuts override site shortcuts when conflicting.';
+    panel.appendChild(footer);
+    overlay.appendChild(panel);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) hideHelpOverlay(); });
+    panel.addEventListener('click', (e) => e.stopPropagation());
+    document.body.appendChild(overlay);
+    helpOverlayVisible = true;
+    overlay.classList.add('vc-show');
+    const onKey = (e) => {
+        if (e.key === 'Escape' || e.key === 'F1') {
+            hideHelpOverlay();
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    };
+    window.addEventListener('keydown', onKey, true);
+    overlay.dataset.cleanup = '1';
+    overlay._helpKeyHandler = onKey;
+}
+
+function hideHelpOverlay() {
+    const wrap = document.getElementById('vc-help-overlay');
+    if (wrap) {
+        wrap.classList.remove('vc-show');
+        if (wrap._helpKeyHandler) window.removeEventListener('keydown', wrap._helpKeyHandler, true);
+    }
+    helpOverlayVisible = false;
+}
+
 // --- Keyboard handling ---
 function setupGlobalKeyHandler() {
     const handler = (e) => {
         if (!config) return;
 
         const key = e.key;
-        // 1. Context Check: Don't block typing in inputs (unless user is focused on a text field)
+        // 1. Context Check: Don't block typing in inputs
         const activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
         if (['input','textarea','select'].includes(activeTag) || document.activeElement?.isContentEditable) return;
+
+        // F1 works even without a video (show help)
+        if (key === 'F1') {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            if (e.type === 'keydown') showHelpOverlay();
+            return;
+        }
 
         const bindings = config.shortcuts;
         const video = pickTargetVideo();
@@ -468,9 +924,11 @@ function setupGlobalKeyHandler() {
         const isNumber = !isNaN(parseInt(key)) && key.trim() !== '';
         const isSpace = isSpaceEvent(e);
         const normalizedBindings = Object.values(bindings).map(k => (k||'').toLowerCase());
-        
-        // 2. Identify if this is a key we care about
-        const isOurKey = normalizedBindings.includes(key.toLowerCase()) || isNumber || isSpace || ['b', 'z', 'x'].includes(key.toLowerCase());
+        const isHotPlayOnly = key === 'F1' || key === '/' || (e.shiftKey && key.toLowerCase() === 'r') || key === '-' || key === '=' ||
+            key === ';' || key === "'" ||
+            (e.shiftKey && (key === ';' || key === "'" || key === 'ArrowLeft' || key === 'ArrowRight'));
+        // 2. Identify if this is a key we care about (extension overrides site when conflicting)
+        const isOurKey = normalizedBindings.includes(key.toLowerCase()) || isNumber || isSpace || ['b', 'z', 'x'].includes(key.toLowerCase()) || (isHotPlayOnly && key !== 'F1');
 
         if (isOurKey) {
             // 3. NUCLEAR OPTION: Stop the website from ever seeing this event
@@ -480,7 +938,7 @@ function setupGlobalKeyHandler() {
 
             // Only process logic on keydown to avoid double-triggering
             if (e.type === 'keydown') {
-                handleLogic(video, key, bindings, isNumber, isSpace);
+                handleLogic(video, key, bindings, isNumber, isSpace, e);
             }
         }
     };
@@ -491,8 +949,102 @@ function setupGlobalKeyHandler() {
 }
 
 // Move your logic into a separate helper to keep the handler clean
-function handleLogic(video, key, bindings, isNumber, isSpace) {
+function handleLogic(video, key, bindings, isNumber, isSpace, e) {
     const matchKey = (k) => (k.length === 1 ? key.toLowerCase() === k.toLowerCase() : key === k);
+    const shift = e && e.shiftKey;
+
+    // --- F1 Help ---
+    if (key === 'F1') {
+        showHelpOverlay();
+        return;
+    }
+    // --- / Frame step ---
+    if (key === '/') {
+        const wasPaused = video.paused;
+        video.pause();
+        const step = FRAME_STEP_DEFAULT;
+        video.currentTime = Math.min(video.duration || Infinity, video.currentTime + step);
+        showOverlay('play', video, 'Frame');
+        if (!wasPaused) setTimeout(() => { video.play().catch(() => {}); }, 120);
+        return;
+    }
+    // --- Shift+R Reset ---
+    if (e.shiftKey && key.toLowerCase() === 'r') {
+        const prevSpeed = video.playbackRate || 1;
+        const prevVol = getVolumePercent(video);
+        const prevBrightness = getBrightness(video);
+        pushHistory(video, { type: 'reset', prevSpeed, prevVol, prevBrightness });
+        video.playbackRate = 1;
+        config.settings.speed = 1;
+        applyVolumePercent(video, 40);
+        config.settings.volume = 40;
+        applyBrightness(video, 100);
+        showOverlay('play', video, 'Reset — Z to undo');
+        saveConfig();
+        return;
+    }
+    // --- − / + Brightness ---
+    if (key === '-') {
+        const cur = getBrightness(video);
+        const next = Math.max(50, cur - 10);
+        applyBrightness(video, next);
+        showOverlay('brightness', video, next);
+        return;
+    }
+    if (key === '=') {
+        const cur = getBrightness(video);
+        const next = Math.min(150, cur + 10);
+        applyBrightness(video, next);
+        showOverlay('brightness', video, next);
+        return;
+    }
+    // --- ; / ' Quality: ; = decrease, ' = increase (YouTube + any site with quality UI) ---
+    if (key === ';' && !shift) {
+        showOverlay('quality', video, 'Quality…');
+        changeVideoQuality(true).then((ok) => {
+            const v = pickTargetVideo();
+            if (ok) showOverlay('quality', v, 'Quality ↓');
+            else showOverlay('quality', v, isYouTube() ? 'Already at lowest' : 'Quality: not available');
+        });
+        return;
+    }
+    if (key === "'" && !shift) {
+        showOverlay('quality', video, 'Quality…');
+        changeVideoQuality(false).then((ok) => {
+            const v = pickTargetVideo();
+            if (ok) showOverlay('quality', v, 'Quality ↑');
+            else showOverlay('quality', v, isYouTube() ? 'Already at highest' : 'Quality: not available');
+        });
+        return;
+    }
+    // --- Shift+; / Shift+' Quality ---
+    if (shift && key === ';') {
+        showOverlay('quality', video, 'Quality…');
+        changeVideoQuality(false).then((ok) => {
+            const v = pickTargetVideo();
+            if (ok) showOverlay('quality', v, 'Quality ↑');
+            else showOverlay('quality', v, 'Quality: not available');
+        });
+        return;
+    }
+    if (shift && key === "'") {
+        showOverlay('quality', video, 'Quality…');
+        changeVideoQuality(true).then((ok) => {
+            const v = pickTargetVideo();
+            if (ok) showOverlay('quality', v, 'Quality ↓');
+            else showOverlay('quality', v, 'Quality: not available');
+        });
+        return;
+    }
+    // --- Shift+← / Shift+→ Chapters ---
+    if (shift && key === 'ArrowLeft') {
+        if (!goToPrevChapter(video)) showOverlay('seekBack', video, 'No prev chapter');
+        return;
+    }
+    if (shift && key === 'ArrowRight') {
+        if (!goToNextChapter(video)) showOverlay('seek', video, 'No next chapter');
+        return;
+    }
 
     // --- B Key ---
     if (key.toLowerCase() === 'b') {
@@ -609,18 +1161,16 @@ function saveConfig() {
 function enforceSettings(video) {
     if (!config) return;
     try {
-        // speed enforcement
         if (Math.abs((video.playbackRate||1) - (config.settings.speed||1)) > 0.05) {
             video.playbackRate = config.settings.speed || 1;
         }
-        // volume enforcement: apply percent (may create audio nodes if boosting)
         if (typeof config.settings.volume !== 'undefined') {
-            try {
-                applyVolumePercent(video, config.settings.volume);
-            } catch(e){}
+            try { applyVolumePercent(video, config.settings.volume); } catch(e){}
         }
-        // muted
         video.muted = !!config.settings.muted;
+        if (typeof config.settings.brightness !== 'undefined') {
+            try { applyBrightness(video, config.settings.brightness); } catch(e){}
+        }
     } catch (e) { console.warn('enforceSettings failed', e); }
 }
 
@@ -634,6 +1184,7 @@ function monitorVideos() {
             if (config.settings?.speed) v.playbackRate = config.settings.speed;
             if (typeof config.settings?.volume !== 'undefined') applyVolumePercent(v, config.settings.volume);
             v.muted = !!config.settings.muted;
+            if (typeof config.settings?.brightness !== 'undefined') applyBrightness(v, config.settings.brightness);
 
             // keep enforcement on play in case site overwrites
             v.addEventListener('play', () => enforceSettings(v));
