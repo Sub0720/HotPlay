@@ -132,9 +132,9 @@ function getVolumePercent(video) {
     }
 }
 
-// Brightness: CSS filter on video only (50..150%)
+// Brightness: CSS filter on video only (0..150%)
 function applyBrightness(video, percent) {
-    percent = Math.max(50, Math.min(150, Math.round(percent)));
+    percent = Math.max(0, Math.min(200, Math.round(percent)));
     config.settings.brightness = percent;
     try {
         video.style.filter = percent === 100 ? 'none' : `brightness(${percent / 100})`;
@@ -986,14 +986,14 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
     // --- − / + Brightness ---
     if (key === '-') {
         const cur = getBrightness(video);
-        const next = Math.max(50, cur - 10);
+        const next = Math.max(0, cur - 10);
         applyBrightness(video, next);
         showOverlay('brightness', video, next);
         return;
     }
     if (key === '=') {
         const cur = getBrightness(video);
-        const next = Math.min(150, cur + 10);
+        const next = Math.min(200, cur + 10);
         applyBrightness(video, next);
         showOverlay('brightness', video, next);
         return;
