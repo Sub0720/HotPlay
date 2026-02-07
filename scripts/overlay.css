@@ -1,84 +1,230 @@
-.vc-overlay{
+/* HotPlay v1.1.1 — Glassmorphism overlay system */
+/* Design tokens: primary #6C5CE7, accent #00B894, neutral dark #1a1a1a */
+
+:root {
+  --hp-primary: #6C5CE7;
+  --hp-accent: #00B894;
+  --hp-bg: rgba(26, 26, 26, 0.72);
+  --hp-border: rgba(255, 255, 255, 0.12);
+  --hp-text: #e8e8e8;
+  --hp-blur: 16px;
+  --hp-radius: 12px;
+  --hp-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --hp-duration: 0.28s;
+}
+
+.vc-overlay {
   position: absolute;
-  z-index: 2147483647;
+  z-index: 2147483646;
   pointer-events: none;
-  padding: 8px 12px;
-  background: linear-gradient(135deg, rgba(0,0,0,0.85), rgba(0,0,0,0.6));
-  color: #fff;
-  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--hp-bg);
+  backdrop-filter: blur(var(--hp-blur));
+  -webkit-backdrop-filter: blur(var(--hp-blur));
+  color: var(--hp-text);
+  border-radius: var(--hp-radius);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 14px;
   font-weight: 600;
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.6);
-  transform: translateY(6px) scale(.98);
+  border: 1px solid var(--hp-border);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  transform: translateY(8px) scale(0.98);
   opacity: 0;
-  transition: opacity .22s ease, transform .22s ease;
+  transition: opacity var(--hp-duration) var(--hp-ease), transform var(--hp-duration) var(--hp-ease);
 }
-.vc-overlay.vc-show{ opacity: 1; transform: translateY(0) scale(1); }
-.vc-overlay .vc-icon{ font-size: 18px; opacity: 0.95; }
-.vc-overlay .vc-text{ font-size: 13px; line-height: 1; opacity: 0.95; }
 
-/* dynamic glow helper (inline styles set by script) */
-.vc-overlay.dynamic-glow{ transition: box-shadow .28s ease, border-color .28s ease, transform .18s ease; }
+.vc-overlay.vc-show {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
 
-/* kinds */
-.vc-overlay.vol{ background: linear-gradient(135deg, rgba(10,10,70,0.9), rgba(0,0,0,0.6)); }
-.vc-overlay.seek{ background: linear-gradient(135deg, rgba(70,10,10,0.9), rgba(0,0,0,0.6)); }
-.vc-overlay.speed{ background: linear-gradient(135deg, rgba(10,70,10,0.9), rgba(0,0,0,0.6)); }
-.vc-overlay.play{ background: linear-gradient(135deg, rgba(30,30,30,0.95), rgba(0,0,0,0.6)); }
-.vc-overlay.mute{ background: linear-gradient(135deg, rgba(80,10,80,0.9), rgba(0,0,0,0.6)); }
-.vc-overlay.percent{ background: linear-gradient(135deg, rgba(30,40,80,0.9), rgba(0,0,0,0.6)); }
+.vc-overlay .vc-icon {
+  font-size: 18px;
+  opacity: 0.95;
+  flex-shrink: 0;
+}
 
-/* Sleek, compact HUD badge */
+.vc-overlay .vc-text {
+  font-size: 13px;
+  line-height: 1.25;
+  opacity: 0.95;
+}
+
+/* Dynamic glow (inline styles from script) */
+.vc-overlay.dynamic-glow {
+  transition: box-shadow 0.28s var(--hp-ease), border-color 0.28s var(--hp-ease), transform 0.18s var(--hp-ease);
+}
+
+/* Kind variants */
+.vc-overlay.vol {
+  background: rgba(26, 26, 50, 0.75);
+  border-color: rgba(108, 92, 231, 0.25);
+}
+.vc-overlay.seek {
+  background: rgba(50, 26, 26, 0.75);
+  border-color: rgba(231, 92, 92, 0.2);
+}
+.vc-overlay.speed {
+  background: rgba(26, 50, 40, 0.75);
+  border-color: rgba(0, 184, 148, 0.25);
+}
+.vc-overlay.play {
+  background: rgba(30, 30, 35, 0.78);
+  border-color: var(--hp-border);
+}
+.vc-overlay.mute {
+  background: rgba(50, 30, 50, 0.75);
+  border-color: rgba(200, 120, 200, 0.2);
+}
+.vc-overlay.percent {
+  background: rgba(30, 35, 55, 0.75);
+  border-color: rgba(108, 92, 231, 0.2);
+}
+.vc-overlay.brightness {
+  background: rgba(45, 40, 30, 0.75);
+  border-color: rgba(253, 203, 110, 0.25);
+}
+.vc-overlay.locked {
+  box-shadow: 0 10px 30px rgba(253, 203, 110, 0.12);
+  border-color: rgba(253, 203, 110, 0.25);
+}
+
+/* Boost (volume >100%) */
+.vc-overlay.boost {
+  box-shadow: 0 10px 40px rgba(0, 184, 148, 0.2);
+  border-color: rgba(0, 184, 148, 0.3);
+}
+
+/* Numeric badge */
 .overlay-num {
-    position: absolute;
-    top: 40px; /* Positioned near the top */
-    left: 50%;
-    transform: translateX(-50%);
-    
-    /* Compact Styling */
-    background: rgba(15, 15, 15, 0.85); /* Deep dark matte */
-    color: #ffffff;
-    padding: 6px 14px;
-    border-radius: 6px;
-    font-family: 'Inter', -apple-system, sans-serif;
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    
-    /* High-end finish */
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-    pointer-events: none;
-    
-    /* Quick fade animation */
-    animation: quickFade 0.6s ease-out forwards;
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--hp-bg);
+  backdrop-filter: blur(var(--hp-blur));
+  -webkit-backdrop-filter: blur(var(--hp-blur));
+  color: #fff;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-family: 'Inter', -apple-system, sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border: 1px solid var(--hp-border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  animation: hp-quickFade 0.6s var(--hp-ease) forwards;
 }
 
-@keyframes quickFade {
-    0% { opacity: 0; transform: translateX(-50%) translateY(-5px); }
-    15% { opacity: 1; transform: translateX(-50%) translateY(0); }
-    80% { opacity: 1; }
-    100% { opacity: 0; }
+@keyframes hp-quickFade {
+  0% { opacity: 0; transform: translateX(-50%) translateY(-5px); }
+  15% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
-/* boosted (volume >100%) */
-.vc-overlay.boost{
-  box-shadow: 0 10px 40px rgba(0,160,0,0.18);
-  border: 1px solid rgba(0,160,0,0.25);
+/* ----- Help Center (F1) ----- */
+#vc-help-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.25s var(--hp-ease), visibility 0.25s var(--hp-ease);
 }
 
-/* locked indicator */
-.vc-overlay.locked{
-  box-shadow: 0 10px 30px rgba(255,200,0,0.12);
-  border: 1px solid rgba(255,200,0,0.18);
+#vc-help-overlay.vc-show {
+  opacity: 1;
+  visibility: visible;
 }
 
-/* small responsive tweaks */
-@media (max-width: 480px){
-  .vc-overlay{ font-size: 12px; padding: 6px 10px; }
-  .vc-overlay .vc-icon{ font-size: 16px; }
+#vc-help-panel {
+  width: min(420px, 92vw);
+  max-height: 85vh;
+  overflow: auto;
+  background: var(--hp-bg);
+  backdrop-filter: blur(var(--hp-blur));
+  -webkit-backdrop-filter: blur(var(--hp-blur));
+  border: 1px solid var(--hp-border);
+  border-radius: var(--hp-radius);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
+  font-family: 'Inter', -apple-system, sans-serif;
+  color: var(--hp-text);
+  transform: scale(0.96);
+  transition: transform 0.25s var(--hp-ease);
+}
+
+#vc-help-overlay.vc-show #vc-help-panel {
+  transform: scale(1);
+}
+
+#vc-help-panel h2 {
+  margin: 0;
+  padding: 16px 20px 12px;
+  font-size: 18px;
+  font-weight: 700;
+  border-bottom: 1px solid var(--hp-border);
+  color: #fff;
+}
+
+#vc-help-panel .vc-help-section {
+  padding: 12px 20px;
+  font-size: 13px;
+}
+
+#vc-help-panel .vc-help-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+#vc-help-panel .vc-help-row:last-child {
+  border-bottom: none;
+}
+
+#vc-help-panel .vc-help-key {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 12px;
+  min-width: 100px;
+  text-align: center;
+}
+
+#vc-help-panel .vc-help-desc {
+  color: rgba(232, 232, 232, 0.9);
+  text-align: right;
+}
+
+#vc-help-panel .vc-help-footer {
+  padding: 12px 20px 16px;
+  font-size: 11px;
+  color: rgba(232, 232, 232, 0.6);
+  border-top: 1px solid var(--hp-border);
+}
+
+@media (max-width: 480px) {
+  .vc-overlay {
+    font-size: 12px;
+    padding: 8px 12px;
+  }
+  .vc-overlay .vc-icon {
+    font-size: 16px;
+  }
 }
