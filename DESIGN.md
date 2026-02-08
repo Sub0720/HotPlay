@@ -175,10 +175,14 @@ When a key (or combo) is bound to HotPlay and the **site** also uses it (e.g. Yo
 
 ---
 
-## 8. File & Asset Map
+## 8. Extension Icon
 
-- `scripts/overlay.css` — Glassmorphism overlay styles, animation classes.
-- `scripts/content.js` — All shortcuts, overlay logic, YouTube quality/chapters, brightness, reset, frame step, help.
-- `icons/` — SVG icon set (skip-sponsor, skip-intro, skip-outro, etc.).
-- `popup/popup.html` — Optional link to “Shortcuts (F1)” and settings.
+- **Source:** `icons/svg/icon-hotplay.svg` — play triangle in rounded square, primary `#6C5CE7`, background `#25252a`. Export to 16×16, 32×32, 48×48, 128×128 PNG and replace `icons/icon16.png` … `icon128.png` for a consistent modern look.
+
+## 9. File & Asset Map
+
+- `scripts/overlay.css` — Glassmorphism overlay styles, animation classes, dynamic glow.
+- `scripts/content.js` — All shortcuts, overlay logic, YouTube quality (Auto baseline), brightness (glow), fullscreen, PiP, session stats, help.
+- `icons/` — PNG toolbar icons; `icons/svg/` — SVG set + icon-hotplay.svg.
+- `popup/` — Redesigned popup: session stats, shortcut list, remap, import/export, onboarding, Buy Me a Coffee.
 - `DESIGN.md` — This document.
