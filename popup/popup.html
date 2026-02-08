@@ -1,42 +1,93 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <style>
-        body { width: 320px; padding: 15px; font-family: "Segoe UI", sans-serif; background: #181818; color: #fff; }
-        h2 { margin-top: 0; font-size: 18px; border-bottom: 1px solid #333; padding-bottom: 10px; color: #f0f0f0; }
-        .setting { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding: 4px; background: #222; border-radius: 4px; }
-        .label { font-size: 13px; color: #ccc; flex-grow: 1; margin-left: 8px;}
-        input { width: 60px; background: #333; border: 1px solid #444; color: #fff; padding: 4px; text-align: center; border-radius: 4px; font-weight: bold; }
-        input:focus { border-color: #cc0000; outline: none; }
-        
-        /* Buttons */
-        .btn-group { margin-top: 15px; display: flex; gap: 10px; }
-        button { flex: 1; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; color: white; transition: background 0.2s;}
-        #save { background: #cc0000; }
-        #save:hover { background: #ff0000; }
-        #add-btn { background: #333; border: 1px solid #555; }
-        #add-btn:hover { background: #444; }
-
-        /* Add Section */
-        #add-section { display: none; margin-top: 10px; padding: 10px; background: #2a2a2a; border-radius: 4px; }
-        #add-section input { width: 100%; margin-bottom: 5px; box-sizing: border-box; text-align: left;}
-    </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HotPlay</title>
+    <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-    <h2>Video Commander</h2>
-    
-    <div id="shortcuts-container">
+    <header class="header">
+        <div class="logo-wrap">
+            <img src="../icons/icon48.png" alt="" class="logo" width="32" height="32">
+            <h1>HotPlay</h1>
         </div>
+    </header>
 
-    <div id="add-section">
-        <input type="text" id="new-action-name" placeholder="Action Name (e.g. SkipIntro)">
-        <input type="text" id="new-action-key" placeholder="Key (e.g. s)">
-        <button id="confirm-add" style="background:#444; width:100%">Add Key</button>
-    </div>
+    <main class="main">
+        <!-- Session stats -->
+        <section class="card stats-card">
+            <h2>Session</h2>
+            <div class="stats-grid">
+                <div class="stat">
+                    <span class="stat-value" id="stat-watched">0m</span>
+                    <span class="stat-label">Watched</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="stat-speed">1×</span>
+                    <span class="stat-label">Avg speed</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="stat-quality">0</span>
+                    <span class="stat-label">Quality changes</span>
+                </div>
+            </div>
+            <div class="stats-actions">
+                <button type="button" class="btn btn-secondary" id="reset-stats">Reset session stats</button>
+            </div>
+        </section>
 
-    <div class="btn-group">
-        <button id="add-btn">+ Add</button>
-        <button id="save">Save Changes</button>
+        <!-- Shortcuts list (read-only display) -->
+        <section class="card shortcuts-card">
+            <h2>Shortcuts</h2>
+            <div class="shortcuts-list" id="shortcuts-list"></div>
+            <p class="hint">Remap below and click Save.</p>
+        </section>
+
+        <!-- Shortcut customization -->
+        <section class="card customize-card">
+            <h2>Remap shortcuts</h2>
+            <div id="shortcuts-edit"></div>
+            <div class="btn-row">
+                <button type="button" class="btn btn-primary" id="save">Save settings</button>
+            </div>
+        </section>
+
+        <!-- Import / Export -->
+        <section class="card io-card">
+            <h2>Settings</h2>
+            <div class="btn-row">
+                <button type="button" class="btn btn-secondary" id="export-btn">Export</button>
+                <button type="button" class="btn btn-secondary" id="import-btn">Import</button>
+                <button type="button" class="btn btn-secondary" id="reset-onboarding">Show welcome again</button>
+                <input type="file" id="import-file" accept=".json" hidden>
+            </div>
+        </section>
+
+        <!-- Buy Me a Coffee -->
+        <section class="card coffee-card">
+            <p class="coffee-text">Enjoying HotPlay?</p>
+            <a href="https://www.buymeacoffee.com" target="_blank" rel="noopener" class="coffee-link" id="coffee-link">Buy Me a Coffee ☕</a>
+            <p class="coffee-note">If this saved you time :D</p>
+        </section>
+    </main>
+
+    <!-- First-time onboarding overlay -->
+    <div class="onboarding-overlay" id="onboarding" hidden>
+        <div class="onboarding-panel">
+            <h2>Welcome to HotPlay</h2>
+            <p>Control any video with keyboard shortcuts over thumbnails, Shorts, and fullscreen.</p>
+            <ul>
+                <li><kbd>K</kbd> / <kbd>Space</kbd> — Play / Pause</li>
+                <li><kbd>↑</kbd><kbd>↓</kbd> — Volume</li>
+                <li><kbd>J</kbd> <kbd>L</kbd> — Seek 10s</li>
+                <li><kbd>F</kbd> — Fullscreen</li>
+                <li><kbd>P</kbd> — Picture-in-Picture</li>
+                <li><kbd>F1</kbd> — Show all shortcuts on page</li>
+            </ul>
+            <p>Overlays show feedback for volume, speed, and quality. Open this popup to remap keys and view session stats.</p>
+            <button type="button" class="btn btn-primary" id="onboarding-done">Got it</button>
+        </div>
     </div>
 
     <script src="popup.js"></script>
