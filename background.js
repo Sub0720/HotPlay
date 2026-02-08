@@ -29,6 +29,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await chrome.storage.local.set({ state: newState });
       await broadcastState(newState);
       sendResponse({ ok: true });
+    } else if (msg.type === 'broadcastConfig') {
+      try {
+        const tabs = await chrome.tabs.query({});
+        for (const tab of tabs) {
+          try { chrome.tabs.sendMessage(tab.id, { type: 'configUpdated' }); } catch (e) {}
+        }
+      } catch (e) {}
+      sendResponse({ ok: true });
     } else sendResponse({ ok: false });
   })();
   return true;
