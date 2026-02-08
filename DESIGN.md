@@ -1,6 +1,6 @@
-# HotPlay v2 — Design & Product Specification
+# HotPlay v1.1.2 — Design & Product Specification
 
-**Version:** 1.1.1  
+**Version:** 1.1.2  
 **Status:** Design direction + feature roadmap  
 **Audience:** Premium desktop browser extension for YouTube with smart overlays and auto-skip (SponsorBlock-style).
 
