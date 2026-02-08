@@ -8,20 +8,26 @@ const DEFAULT_CONFIG = {
         volUp: 'ArrowUp',
         volDown: 'ArrowDown',
         playPause: 'k',
-        speedUp: '>',   // Shift + .
-        speedDown: '<', // Shift + ,
+        speedUp: '>',
+        speedDown: '<',
         mute: 'm',
         seekBack: 'j',
         seekFwd: 'l',
         seekBack5: 'ArrowLeft',
-        seekFwd5: 'ArrowRight'
+        seekFwd5: 'ArrowRight',
+        fullscreen: 'f',
+        pip: 'p'
     },
     settings: {
-        volume: 40,   // stored as 0..200 percent (default 40%)
+        volume: 40,
         speed: 1.0,
         muted: false,
-        brightness: 100  // 50..150, applied as CSS filter (100 = normal)
-    }
+        brightness: 100
+    },
+    // Last effective resolution when Auto was active (e.g. 720) — used as baseline for quality shortcuts
+    lastAutoResolution: null,
+    // Session stats (time watched, speed samples, quality changes) — lightweight
+    sessionStats: { watchedSeconds: 0, speedSamples: [], qualityChanges: 0, lastSpeed: 1, lastQualityTime: 0 }
 };
 
 let config = null;
@@ -261,24 +267,85 @@ function openYouTubeQualitySubmenu() {
     return true;
 }
 
-// up = true → decrease quality (next in list); up = false → increase quality (previous in list)
-function clickYouTubeQualityOption(up) {
+// Parse resolution from menu label: "720p" -> 720, "Auto" -> null
+function parseQualityLabel(text) {
+    if (!text) return { res: null, auto: false };
+    const t = (text || '').trim();
+    if (/auto/i.test(t)) return { res: null, auto: true };
+    const m = t.match(/(\d{3,4})\s*[pP]/);
+    return { res: m ? parseInt(m[1], 10) : null, auto: false };
+}
+
+// Minimum resolution we allow via shortcut (never jump to 144p unless user selects it in UI)
+const MIN_QUALITY_RES = 240;
+
+// Build ordered list: highest res first [1080, 720, 480, 360, 240, 144], then Auto
+function getYouTubeQualityItemsOrdered(menu) {
+    if (!menu) return [];
+    const items = menu.querySelectorAll('.ytp-menuitem[role="menuitem"], .ytp-menuitem');
+    const list = [];
+    for (let i = 0; i < items.length; i++) {
+        const el = items[i];
+        const text = (el.textContent || '').trim();
+        const { res, auto } = parseQualityLabel(text);
+        list.push({ el, res, auto, index: i });
+    }
+    // Sort: fixed resolutions descending (1080, 720, ... 144), then Auto last
+    const withRes = list.filter(x => x.res != null);
+    const autoItems = list.filter(x => x.auto);
+    withRes.sort((a, b) => (b.res - a.res));
+    return [...withRes, ...autoItems];
+}
+
+// Get effective resolution from video (what Auto is currently playing at)
+function getEffectiveResolution(video) {
+    try {
+        const w = video.videoWidth || 0;
+        const h = video.videoHeight || 0;
+        const height = Math.max(w, h);
+        if (height >= 1080) return 1080;
+        if (height >= 720) return 720;
+        if (height >= 480) return 480;
+        if (height >= 360) return 360;
+        if (height >= 240) return 240;
+        if (height >= 144) return 144;
+        return null;
+    } catch (e) { return null; }
+}
+
+// up = true → decrease quality; up = false → increase quality. Uses Auto baseline, never shortcuts to 144p.
+function clickYouTubeQualityOption(up, video) {
     const menu = queryYT('.ytp-quality-menu') || queryYT('.ytp-panel-menu');
     if (!menu) return false;
-    const items = menu.querySelectorAll('.ytp-menuitem[role="menuitem"], .ytp-menuitem');
-    if (!items.length) return false;
+    const ordered = getYouTubeQualityItemsOrdered(menu);
+    if (!ordered.length) return false;
     const current = menu.querySelector('.ytp-menuitem[aria-checked="true"]') || menu.querySelector('.ytp-menuitem[aria-selected="true"]');
-    let idx = current ? Array.from(items).indexOf(current) : -1;
-    if (up) {
-        if (idx < 0) return false;
-        if (idx >= items.length - 1) return false;
-        idx = idx + 1;
-    } else {
-        if (idx < 0) idx = 0;
-        else if (idx <= 0) return false;
-        else idx = idx - 1;
+    let currentIdx = current ? ordered.findIndex(o => o.el === current) : -1;
+
+    const isAuto = currentIdx >= 0 && ordered[currentIdx].auto;
+    if (isAuto && video) {
+        const effective = getEffectiveResolution(video) || config.lastAutoResolution || 720;
+        if (config) config.lastAutoResolution = effective;
+        currentIdx = ordered.findIndex(o => o.res === effective);
+        if (currentIdx < 0) currentIdx = ordered.findIndex(o => o.res != null && o.res <= effective);
+        if (currentIdx < 0) currentIdx = 0;
     }
-    const target = items[idx];
+
+    let targetIdx;
+    if (up) {
+        if (currentIdx < 0) currentIdx = 0;
+        if (currentIdx >= ordered.length - 1) return false;
+        targetIdx = currentIdx + 1;
+        const targetRes = ordered[targetIdx].res;
+        if (targetRes !== null && targetRes < MIN_QUALITY_RES) return false;
+    } else {
+        if (currentIdx <= 0) return false;
+        targetIdx = currentIdx - 1;
+        const targetRes = ordered[targetIdx].res;
+        if (targetRes !== null && targetRes < MIN_QUALITY_RES) return false;
+    }
+
+    const target = ordered[targetIdx]?.el;
     if (target) target.click();
     return !!target;
 }
@@ -323,7 +390,7 @@ function showYouTubePanelUI() {
     } catch (e) {}
 }
 
-function changeYouTubeQuality(up) {
+function changeYouTubeQuality(up, video) {
     if (!isYouTube()) return Promise.resolve(false);
     hideYouTubePanelUI();
     if (!openYouTubeSettingsPanel()) {
@@ -339,11 +406,16 @@ function changeYouTubeQuality(up) {
                 return;
             }
             setTimeout(() => {
-                const ok = clickYouTubeQualityOption(up);
+                const ok = clickYouTubeQualityOption(up, video || pickTargetVideo());
+                if (ok && config) {
+                    config.sessionStats = config.sessionStats || { watchedSeconds: 0, speedSamples: [], qualityChanges: 0, lastSpeed: 1, lastQualityTime: 0 };
+                    config.sessionStats.qualityChanges = (config.sessionStats.qualityChanges || 0) + 1;
+                    config.sessionStats.lastQualityTime = Date.now();
+                    saveConfig();
+                }
                 setTimeout(() => {
                     const back = queryYT('.ytp-settings-button');
                     if (back) back.click();
-                    // Restore UI only after panel has fully closed so the popup never flashes
                     setTimeout(() => {
                         showYouTubePanelUI();
                         resolve(ok);
@@ -481,8 +553,8 @@ function clickGenericQualityOption(options, up) {
     return false;
 }
 
-function changeVideoQuality(up) {
-    if (isYouTube()) return changeYouTubeQuality(up);
+function changeVideoQuality(up, video) {
+    if (isYouTube()) return changeYouTubeQuality(up, video);
     return changeQualityGeneric(up);
 }
 
@@ -617,9 +689,10 @@ function toggleSiteLock(video) {
     const data = await chrome.storage.local.get([STORAGE_KEY]);
     config = { ...DEFAULT_CONFIG, ...(data[STORAGE_KEY] || {}) };
 
-    // ensure nested merging
     config.shortcuts = { ...DEFAULT_CONFIG.shortcuts, ...(data[STORAGE_KEY]?.shortcuts || {}) };
     config.settings = { ...DEFAULT_CONFIG.settings, ...(data[STORAGE_KEY]?.settings || {}) };
+    config.lastAutoResolution = data[STORAGE_KEY]?.lastAutoResolution ?? config.lastAutoResolution;
+    config.sessionStats = { ...DEFAULT_CONFIG.sessionStats, ...(data[STORAGE_KEY]?.sessionStats || {}) };
 
     // normalize volume stored value if it's in 0..1 (older versions) -> convert to percent
     if (config.settings.volume && config.settings.volume <= 1) {
@@ -629,11 +702,24 @@ function toggleSiteLock(video) {
     setupGlobalKeyHandler();
     monitorVideos();
 
-    // periodic enforcement to counter site resets (only when tab visible to reduce lag)
+    // periodic enforcement + lightweight session stats (only when tab visible)
+    let lastStatsSaveMin = 0;
     setInterval(() => {
         if (document.visibilityState !== 'visible') return;
         const v = pickTargetVideo();
-        if (v) enforceSettings(v);
+        if (v) {
+            enforceSettings(v);
+            if (config.sessionStats && !v.paused && v.readyState > 1) {
+                config.sessionStats.watchedSeconds = (config.sessionStats.watchedSeconds || 0) + 3.5;
+                config.sessionStats.lastSpeed = v.playbackRate;
+                const arr = config.sessionStats.speedSamples || [];
+                if (arr.length < 30) arr.push(v.playbackRate);
+                else { arr.shift(); arr.push(v.playbackRate); }
+                config.sessionStats.speedSamples = arr;
+                const nowMin = Math.floor(Date.now() / 60000);
+                if (nowMin !== lastStatsSaveMin) { lastStatsSaveMin = nowMin; saveConfig(); }
+            }
+        }
     }, 3500);
 
     console.log('Video Commander: initialized');
@@ -736,10 +822,9 @@ function showOverlay(kind, video, value) {
         document.body.appendChild(overlay);
         activeOverlay = overlay;
 
-        // DYNAMIC GLOW: for volume (>100 green, >150 red) and speed (>2 green, >3 red)
+        // DYNAMIC GLOW: volume (>100 green, >150 red), speed (>2 green, >3 red), brightness (>150% red, <50% green)
             overlay.classList.add('dynamic-glow');
             try {
-                // helper to blend two RGB colors
                 const blendColor = (c1, c2, t) => [
                     Math.round(c1[0] + (c2[0]-c1[0]) * t),
                     Math.round(c1[1] + (c2[1]-c1[1]) * t),
@@ -749,29 +834,30 @@ function showOverlay(kind, video, value) {
                 if (kind === 'vol' && value) {
                     const v = Number(value) || 0;
                     if (v > 100) {
-                        darkness = Math.min(1, (v - 100) / 100); // 100..200 -> 0..1
-                        if (v <= 150) {
-                            colorRGB = [0,160,0];
-                        } else {
-                            const t = Math.min(1, (v - 150) / 50); // 150..200 -> 0..1 blend to red
-                            colorRGB = blendColor([0,160,0],[160,0,0], t);
-                        }
+                        darkness = Math.min(1, (v - 100) / 100);
+                        if (v <= 150) colorRGB = [0,160,0];
+                        else colorRGB = blendColor([0,160,0],[160,0,0], Math.min(1, (v - 150) / 50));
                     }
                 } else if (kind === 'speed' && value) {
                     const sp = Number(value) || 0;
                     if (sp > 2) {
-                        darkness = Math.min(1, (sp - 2) / 2); // 2..4 -> 0..1
-                        if (sp <= 3) {
-                            colorRGB = [0,160,0];
-                        } else {
-                            const t = Math.min(1, (sp - 3) / 1); // 3..4 -> blend
-                            colorRGB = blendColor([0,160,0],[160,0,0], t);
-                        }
+                        darkness = Math.min(1, (sp - 2) / 2);
+                        if (sp <= 3) colorRGB = [0,160,0];
+                        else colorRGB = blendColor([0,160,0],[160,0,0], Math.min(1, (sp - 3) / 1));
+                    }
+                } else if (kind === 'brightness' && value != null) {
+                    const b = Number(value) || 100;
+                    if (b > 150) {
+                        darkness = Math.min(1, (b - 150) / 50);
+                        colorRGB = [200, 60, 60];
+                    } else if (b < 50) {
+                        darkness = Math.min(1, (50 - b) / 50);
+                        colorRGB = [60, 180, 80];
                     }
                 }
                 if (colorRGB) {
-                    const boxAlpha = 0.08 + (0.6 * darkness); // 0.08..0.68
-                    const borderAlpha = 0.08 + (0.55 * darkness);
+                    const boxAlpha = 0.08 + (0.6 * Math.min(1, darkness));
+                    const borderAlpha = 0.08 + (0.55 * Math.min(1, darkness));
                     overlay.style.boxShadow = `0 10px 40px rgba(${colorRGB[0]},${colorRGB[1]},${colorRGB[2]},${boxAlpha})`;
                     overlay.style.border = `1px solid rgba(${colorRGB[0]},${colorRGB[1]},${colorRGB[2]},${borderAlpha})`;
                 } else {
@@ -809,34 +895,37 @@ function showOverlay(kind, video, value) {
 // ----- Help Center (F1) -----
 function getHelpShortcutsList() {
     const bindings = config?.shortcuts || DEFAULT_CONFIG.shortcuts;
+    const k = (name) => (bindings[name] || name.toUpperCase());
     return [
         { key: 'F1', desc: 'Show this help' },
-        { key: 'K', desc: 'Play / Pause' },
+        { key: k('playPause'), desc: 'Play / Pause' },
         { key: 'Space', desc: 'Play / Pause' },
-        { key: 'M', desc: 'Mute / Unmute' },
-        { key: '↑', desc: 'Volume up' },
-        { key: '↓', desc: 'Volume down' },
-        { key: 'J', desc: 'Seek −10 s' },
-        { key: 'L', desc: 'Seek +10 s' },
-        { key: '←', desc: 'Seek −5 s' },
-        { key: '→', desc: 'Seek +5 s' },
-        { key: 'Shift + .', desc: 'Speed up' },
-        { key: 'Shift + ,', desc: 'Speed down' },
+        { key: k('mute'), desc: 'Mute / Unmute' },
+        { key: k('volUp'), desc: 'Volume up' },
+        { key: k('volDown'), desc: 'Volume down' },
+        { key: k('seekBack'), desc: 'Seek −10 s' },
+        { key: k('seekFwd'), desc: 'Seek +10 s' },
+        { key: k('seekBack5'), desc: 'Seek −5 s' },
+        { key: k('seekFwd5'), desc: 'Seek +5 s' },
+        { key: k('speedUp'), desc: 'Speed up' },
+        { key: k('speedDown'), desc: 'Speed down' },
         { key: '0–9', desc: 'Jump to 0%–90%' },
         { key: 'B', desc: 'Set marker / jump to marker' },
         { key: 'Z', desc: 'Undo last action' },
         { key: 'X', desc: 'Focus lock on video' },
         { key: 'Shift + R', desc: 'Reset speed, volume, brightness' },
         { key: 'Z (after reset)', desc: 'Undo reset' },
-        { key: '−', desc: 'Decrease brightness (video only)' },
-        { key: '=', desc: 'Increase brightness (video only)' },
+        { key: '−', desc: 'Decrease brightness' },
+        { key: '=', desc: 'Increase brightness' },
         { key: ";", desc: 'Decrease video quality' },
         { key: "'", desc: 'Increase video quality' },
-        { key: 'Shift + ;', desc: 'Increase video quality' },
-        { key: "Shift + '", desc: 'Decrease video quality' },
+        { key: 'Shift + ;', desc: 'Increase quality' },
+        { key: "Shift + '", desc: 'Decrease quality' },
+        { key: k('fullscreen'), desc: 'Toggle fullscreen' },
+        { key: k('pip'), desc: 'Toggle Picture-in-Picture' },
         { key: 'Shift + ←', desc: 'Previous chapter' },
         { key: 'Shift + →', desc: 'Next chapter' },
-        { key: '/', desc: 'Frame-by-frame (one frame)' }
+        { key: '/', desc: 'Frame-by-frame' }
     ];
 }
 
@@ -998,10 +1087,10 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
         showOverlay('brightness', video, next);
         return;
     }
-    // --- ; / ' Quality: ; = decrease, ' = increase (YouTube + any site with quality UI) ---
+    // --- ; / ' Quality: ; = decrease, ' = increase (Auto baseline, never 144p) ---
     if (key === ';' && !shift) {
         showOverlay('quality', video, 'Quality…');
-        changeVideoQuality(true).then((ok) => {
+        changeVideoQuality(true, video).then((ok) => {
             const v = pickTargetVideo();
             if (ok) showOverlay('quality', v, 'Quality ↓');
             else showOverlay('quality', v, isYouTube() ? 'Already at lowest' : 'Quality: not available');
@@ -1010,17 +1099,16 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
     }
     if (key === "'" && !shift) {
         showOverlay('quality', video, 'Quality…');
-        changeVideoQuality(false).then((ok) => {
+        changeVideoQuality(false, video).then((ok) => {
             const v = pickTargetVideo();
             if (ok) showOverlay('quality', v, 'Quality ↑');
             else showOverlay('quality', v, isYouTube() ? 'Already at highest' : 'Quality: not available');
         });
         return;
     }
-    // --- Shift+; / Shift+' Quality ---
     if (shift && key === ';') {
         showOverlay('quality', video, 'Quality…');
-        changeVideoQuality(false).then((ok) => {
+        changeVideoQuality(false, video).then((ok) => {
             const v = pickTargetVideo();
             if (ok) showOverlay('quality', v, 'Quality ↑');
             else showOverlay('quality', v, 'Quality: not available');
@@ -1029,7 +1117,7 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
     }
     if (shift && key === "'") {
         showOverlay('quality', video, 'Quality…');
-        changeVideoQuality(true).then((ok) => {
+        changeVideoQuality(true, video).then((ok) => {
             const v = pickTargetVideo();
             if (ok) showOverlay('quality', v, 'Quality ↓');
             else showOverlay('quality', v, 'Quality: not available');
@@ -1060,6 +1148,33 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
     // --- X Key ---
     if (key.toLowerCase() === 'x') {
         toggleSiteLock(video);
+        return;
+    }
+    // --- Fullscreen (F) ---
+    if (matchKey(bindings.fullscreen)) {
+        try {
+            const doc = document;
+            if (doc.fullscreenElement) {
+                doc.exitFullscreen().then(() => showOverlay('play', video, 'Fullscreen off')).catch(() => {});
+            } else {
+                const target = video.closest?.('.html5-video-player') || video.parentElement || video;
+                (target.requestFullscreen || target.webkitRequestFullscreen)?.call(target);
+                showOverlay('play', video, 'Fullscreen');
+            }
+        } catch (e) { showOverlay('play', video, 'Fullscreen unavailable'); }
+        return;
+    }
+    // --- Picture-in-Picture (P) ---
+    if (matchKey(bindings.pip)) {
+        try {
+            if (document.pictureInPictureElement) {
+                document.exitPictureInPicture().then(() => showOverlay('play', video, 'PiP off')).catch(() => {});
+            } else if (document.pictureInPictureEnabled && video.readyState >= 2) {
+                video.requestPictureInPicture().then(() => showOverlay('play', video, 'PiP on')).catch(() => showOverlay('play', video, 'PiP unavailable'));
+            } else {
+                showOverlay('play', video, 'PiP unavailable');
+            }
+        } catch (e) { showOverlay('play', video, 'PiP unavailable'); }
         return;
     }
     // --- Numbers ---
@@ -1228,7 +1343,22 @@ function monitorVideos() {
     observer.observe(document.documentElement || document.body, { childList: true, subtree: true });
 }
 
-// optional: expose a simple message API
+// Reload config when popup saves (so shortcuts update without refresh)
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg && msg.type === 'configUpdated') {
+        chrome.storage.local.get([STORAGE_KEY]).then((data) => {
+            const prev = config;
+            config = { ...DEFAULT_CONFIG, ...(data[STORAGE_KEY] || {}) };
+            config.shortcuts = { ...DEFAULT_CONFIG.shortcuts, ...(data[STORAGE_KEY]?.shortcuts || {}) };
+            config.settings = { ...DEFAULT_CONFIG.settings, ...(data[STORAGE_KEY]?.settings || {}) };
+            config.lastAutoResolution = data[STORAGE_KEY]?.lastAutoResolution ?? config.lastAutoResolution;
+            config.sessionStats = { ...DEFAULT_CONFIG.sessionStats, ...(data[STORAGE_KEY]?.sessionStats || {}) };
+            sendResponse({ ok: true });
+        });
+        return true;
+    }
+});
+
 window.addEventListener('message', (e) => {
     if (!e.data || !e.data.type) return;
     if (e.data.type === 'VC_GET_STATE') {
