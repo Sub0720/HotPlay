@@ -1,5 +1,12 @@
-// scripts/content.js - HotPlay v1.1.1
-// Video controls: lock (X), volume boost, B marker, Z undo, brightness, quality (YouTube), chapters, frame step, F1 help
+/**
+ * scripts/content.js - HotPlay v1.1.2 (Patched)
+ * * Changelog v1.1.2:
+ * - Fixed startup race condition where shortcuts failed if storage wasn't ready.
+ * - Fixed DOMException by lazy-loading AudioContexts only when needed.
+ * - Fixed AudioContext suspension issues on browser restart.
+ * - Improved video targeting (prioritizes main video).
+ * - Removed global failure flag; audio errors are now handled per-video.
+ */
 
 const STORAGE_KEY = 'vcConfig';
 
@@ -24,103 +31,129 @@ const DEFAULT_CONFIG = {
         muted: false,
         brightness: 100
     },
-    // Last effective resolution when Auto was active (e.g. 720) — used as baseline for quality shortcuts
     lastAutoResolution: null,
-    // Session stats (time watched, speed samples, quality changes) — lightweight
     sessionStats: { watchedSeconds: 0, speedSamples: [], qualityChanges: 0, lastSpeed: 1, lastQualityTime: 0 }
 };
 
-let config = null;
+// Initialize with defaults immediately so keys work while storage loads
+let config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 let activeOverlay = null;
 
-// ---------------- Feature additions: Lock, Volume Boost, Marker (B), Undo (Z), Brightness, Help ----------------
-const vcState = new WeakMap(); // per-video state: { audioCtx, sourceNode, gainNode, history:[], marker: null }
+// ---------------- Feature additions ----------------
+const vcState = new WeakMap(); // per-video state
 let siteLocked = false;
 let lockedVideoRef = null;
 let helpOverlayVisible = false;
-const FRAME_STEP_DEFAULT = 1 / 30; // ~33ms for 30fps when frame rate unknown
+const FRAME_STEP_DEFAULT = 1 / 30;
 
 function ensureVideoState(video) {
     if (!vcState.has(video)) {
-        vcState.set(video, { audioCtx: null, sourceNode: null, gainNode: null, history: [], marker: null });
+        vcState.set(video, { 
+            audioCtx: null, 
+            sourceNode: null, 
+            gainNode: null, 
+            history: [], 
+            marker: null,
+            audioError: false // Track audio failures per video, not globally
+        });
     }
     return vcState.get(video);
 }
 
 // Volume booster: up to 200% using WebAudio GainNode
 function ensureAudioNodes(video) {
-    try {
-
-    // Guard: if audio node creation failed previously, skip re-creating nodes to avoid breaking playback.
-    if (window.__HotPlay_audioNodeCreationFailed) { return; }
-
     const st = ensureVideoState(video);
+    
+    // If we already failed for this specific video (e.g. CORS or limit), don't retry incessantly
+    if (st.audioError) return st; 
+
     try {
-        if (st.gainNode) return st;
+        if (st.gainNode) {
+            // Ensure context is running if we are interacting
+            if (st.audioCtx && st.audioCtx.state === 'suspended') {
+                st.audioCtx.resume().catch(() => {});
+            }
+            return st;
+        }
+
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        if (!AudioCtx) return st;
-        // create audio context lazily
+        if (!AudioCtx) {
+            st.audioError = true;
+            return st;
+        }
+
+        // Lazy creation: Create context only when actually requested
         if (!st.audioCtx) {
             try {
                 st.audioCtx = new AudioCtx();
             } catch (e) {
-                // may be blocked until user gesture
-                st.audioCtx = null;
+                // Often hits limit of 6 contexts. Fail gracefully.
+                st.audioError = true;
                 return st;
             }
         }
-        if (!st.audioCtx) return st;
-        // If we've already created a MediaElementSource for this video in another run, creating again will throw.
-        // Guard: only create if not created
-        if (!st.sourceNode) {
+
+        // Connect to video source
+        if (!st.sourceNode && st.audioCtx) {
             try {
+                // This throws DOMException if element already connected or CORS issue
                 st.sourceNode = st.audioCtx.createMediaElementSource(video);
                 st.gainNode = st.audioCtx.createGain();
                 st.sourceNode.connect(st.gainNode);
                 st.gainNode.connect(st.audioCtx.destination);
                 st.gainNode.gain.value = 1.0;
             } catch (e) {
-                // Some browsers disallow multiple createMediaElementSource for the same element in different contexts.
-                console.warn('VC: audio node creation failed', e);
+                console.warn('VC: Audio source attach failed (CORS or existing)', e);
+                st.audioError = true; // Disable boost for this video only
+                
+                // Cleanup partials if failed
+                try { if(st.gainNode) st.gainNode.disconnect(); } catch(z){}
+                st.sourceNode = null;
+                st.gainNode = null;
             }
         }
     } catch (e) {
-        console.warn('VC: audio nodes error', e);
+        console.warn('VC: General audio error', e);
+        st.audioError = true;
     }
     return st;
-
-    } catch (e) {
-        console.warn('VC: audio node creation failed', e);
-        window.__HotPlay_audioNodeCreationFailed = true;
-        return;
-    }
 }
 
 function applyVolumePercent(video, pct) {
-    // pct is 0..200
     pct = Math.max(0, Math.min(200, Math.round(pct)));
     const st = ensureVideoState(video);
+
+    // Standard HTML5 volume
     if (pct <= 100) {
         try { video.volume = pct / 100; } catch(e){}
-        if (st.gainNode) try { st.gainNode.gain.value = 1.0; } catch(e){}
+        // Reset gain if it exists
+        if (st.gainNode) {
+            try { st.gainNode.gain.value = 1.0; } catch(e){}
+        }
     } else {
-        // html5 volume = 1, then apply gain
+        // Boosting needed
         try { video.volume = 1.0; } catch(e){}
-        const wantedGain = pct / 100.0;
+        
+        // Only try to create nodes if we are actually boosting
         const s = ensureAudioNodes(video);
+        
         if (s.gainNode) {
             try {
+                const wantedGain = pct / 100.0;
                 s.gainNode.gain.value = wantedGain;
             } catch(e){
                 console.warn('VC: cannot set gain', e);
             }
         } else {
-            console.warn('VC: AudioContext/gain unavailable, cannot boost');
+            // Fallback: If boost fails (CORS/Context limit), just keep volume at 100%
+            // Do not warn repeatedly
         }
     }
-    // store the percent in config for persistence
+
+    // Update global setting
     config.settings.volume = pct;
-    saveConfig();
+    // Don't save on every frame update, but caller (key handler) usually handles logic.
+    // We defer saveConfig call to the event handler to reduce I/O spam.
 }
 
 function getVolumePercent(video) {
@@ -145,7 +178,7 @@ function applyBrightness(video, percent) {
     try {
         video.style.filter = percent === 100 ? 'none' : `brightness(${percent / 100})`;
     } catch (e) {}
-    saveConfig();
+    // saveConfig handled by caller
 }
 
 function getBrightness(video) {
@@ -162,8 +195,6 @@ function formatTime(secs) {
     return `${m}:${String(s2).padStart(2,'0')}`;
 }
 
-
-
 // Marker ('B') functionality
 function toggleMarker(video) {
     const st = ensureVideoState(video);
@@ -178,8 +209,6 @@ function toggleMarker(video) {
         st.marker = null;
     }
 }
-
-
 
 // History / Undo support
 function pushHistory(video, action) {
@@ -210,6 +239,7 @@ function undoLast(video) {
         else { const p = video.play(); showOverlay('play', video, null); if (p && p.catch) p.catch(()=>{}); }
     } else if (act.type === 'volume') {
         applyVolumePercent(video, act.prev);
+        saveConfig();
         showOverlay('vol', video, act.prev);
     } else if (act.type === 'reset') {
         if (act.prevSpeed != null) video.playbackRate = act.prevSpeed;
@@ -230,7 +260,6 @@ function isYouTube() {
     try { return /youtube\.com|youtu\.be/i.test(window.location.href); } catch (e) { return false; }
 }
 
-// YouTube player controls can be in document or inside #movie_player shadow root
 function queryYT(selector) {
     const el = document.querySelector(selector);
     if (el) return el;
@@ -238,25 +267,13 @@ function queryYT(selector) {
     if (host && host.shadowRoot) return host.shadowRoot.querySelector(selector);
     return null;
 }
-function queryYTAll(selector) {
-    const list = document.querySelectorAll(selector);
-    if (list.length) return list;
-    const host = document.querySelector('#movie_player');
-    if (host && host.shadowRoot) return host.shadowRoot.querySelectorAll(selector);
-    return [];
-}
 
-// Open main settings panel (gear)
 function openYouTubeSettingsPanel() {
     const gear = queryYT('.ytp-settings-button');
-    if (gear) {
-        gear.click();
-        return true;
-    }
+    if (gear) { gear.click(); return true; }
     return false;
 }
 
-// Click the "Quality" row to open the quality submenu (Quality is usually last in the list)
 function openYouTubeQualitySubmenu() {
     const panel = queryYT('.ytp-panel-menu') || queryYT('.ytp-settings-menu');
     if (!panel) return false;
@@ -267,7 +284,6 @@ function openYouTubeQualitySubmenu() {
     return true;
 }
 
-// Parse resolution from menu label: "720p" -> 720, "Auto" -> null
 function parseQualityLabel(text) {
     if (!text) return { res: null, auto: false };
     const t = (text || '').trim();
@@ -276,10 +292,8 @@ function parseQualityLabel(text) {
     return { res: m ? parseInt(m[1], 10) : null, auto: false };
 }
 
-// Minimum resolution we allow via shortcut (never jump to 144p unless user selects it in UI)
 const MIN_QUALITY_RES = 240;
 
-// Build ordered list: highest res first [1080, 720, 480, 360, 240, 144], then Auto
 function getYouTubeQualityItemsOrdered(menu) {
     if (!menu) return [];
     const items = menu.querySelectorAll('.ytp-menuitem[role="menuitem"], .ytp-menuitem');
@@ -290,14 +304,12 @@ function getYouTubeQualityItemsOrdered(menu) {
         const { res, auto } = parseQualityLabel(text);
         list.push({ el, res, auto, index: i });
     }
-    // Sort: fixed resolutions descending (1080, 720, ... 144), then Auto last
     const withRes = list.filter(x => x.res != null);
     const autoItems = list.filter(x => x.auto);
     withRes.sort((a, b) => (b.res - a.res));
     return [...withRes, ...autoItems];
 }
 
-// Get effective resolution from video (what Auto is currently playing at)
 function getEffectiveResolution(video) {
     try {
         const w = video.videoWidth || 0;
@@ -313,7 +325,6 @@ function getEffectiveResolution(video) {
     } catch (e) { return null; }
 }
 
-// up = true → decrease quality; up = false → increase quality. Uses Auto baseline, never shortcuts to 144p.
 function clickYouTubeQualityOption(up, video) {
     const menu = queryYT('.ytp-quality-menu') || queryYT('.ytp-panel-menu');
     if (!menu) return false;
@@ -350,7 +361,6 @@ function clickYouTubeQualityOption(up, video) {
     return !!target;
 }
 
-// Hide all settings/quality panels (main menu + submenus) so quality change is invisible
 const YT_PANEL_HIDE_STYLE = [
     '.ytp-panel { opacity: 0 !important; transition: none !important; pointer-events: auto !important; }',
     '.ytp-settings-panel { opacity: 0 !important; transition: none !important; pointer-events: auto !important; }',
@@ -426,7 +436,7 @@ function changeYouTubeQuality(up, video) {
     });
 }
 
-// ----- Generic quality (any site): find quality/settings UI and cycle -----
+// ----- Generic quality -----
 const QUALITY_LEVEL_TEXT = /auto|(\d{3,4})\s*[pP]|hd|sd|high|low|best|worst/i;
 
 function collectRoots() {
@@ -463,7 +473,7 @@ function isClickable(el) {
 function qualityLevelOrder(text) {
     if (!text) return -1;
     const m = text.match(/(\d{3,4})\s*[pP]/);
-    if (m) return -parseInt(m[1], 10); // higher res first (1080 -> -1080)
+    if (m) return -parseInt(m[1], 10);
     if (/auto/i.test(text)) return 0;
     if (/hd|high/i.test(text)) return -720;
     if (/sd|low/i.test(text)) return -360;
@@ -531,7 +541,7 @@ function changeQualityGeneric(up) {
 
 function clickGenericQualityOption(options, up) {
     if (!options.length) return false;
-    options.sort((a, b) => a.order - b.order); // highest quality first (most negative)
+    options.sort((a, b) => a.order - b.order);
     const current = options.findIndex(o => {
         const el = o.el;
         return el.getAttribute?.('aria-checked') === 'true' || el.getAttribute?.('aria-selected') === 'true' ||
@@ -546,10 +556,7 @@ function clickGenericQualityOption(options, up) {
         idx = idx - 1;
     }
     const target = options[idx]?.el;
-    if (target) {
-        target.click();
-        return true;
-    }
+    if (target) { target.click(); return true; }
     return false;
 }
 
@@ -558,7 +565,7 @@ function changeVideoQuality(up, video) {
     return changeQualityGeneric(up);
 }
 
-// ----- YouTube: Chapters (Shift+← / Shift+→) -----
+// ----- YouTube: Chapters -----
 function getYouTubeChapterTimes() {
     const times = [];
     try {
@@ -615,19 +622,14 @@ function goToNextChapter(video) {
     return false;
 }
 
-// Lock toggle (X): prevent switching active video by hover/click until unlocked
+// Lock toggle (X)
 function toggleSiteLock(video) {
     try {
-        // Focus mode: create an overlay that sits exactly over the target video element
-        // and intercepts pointer events to prevent site hover-UI from appearing. This
-        // intentionally does NOT block the rest of the page so the site remains usable.
         const target = video || pickTargetVideo();
         if (!target) return;
-        const existing = document.getElementById('vc_focus_overlay');
         if (!siteLocked) {
             siteLocked = true;
             lockedVideoRef = target;
-            // create overlay
             const over = document.createElement('div');
             over.id = 'vc_focus_overlay';
             over.style.position = 'fixed';
@@ -636,11 +638,9 @@ function toggleSiteLock(video) {
             over.style.background = 'transparent';
             over.style.borderRadius = '4px';
             over.setAttribute('aria-hidden','true');
-            // place and size it to the video rect
             const place = () => {
                 try {
                     const r = (lockedVideoRef && lockedVideoRef.getBoundingClientRect && lockedVideoRef.getBoundingClientRect()) || {left:0,top:0,width:0,height:0};
-                    // clamp values inside viewport
                     const left = Math.max(0, r.left);
                     const top = Math.max(0, r.top);
                     over.style.left = left + 'px';
@@ -649,60 +649,54 @@ function toggleSiteLock(video) {
                     over.style.height = Math.max(0, r.height) + 'px';
                 } catch(e) {}
             };
-            // capture pointer events to prevent hover UI, but allow scroll/keyboard for page
             over.addEventListener('mousemove', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); }, true);
             over.addEventListener('mouseenter', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); }, true);
             over.addEventListener('mouseover', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); }, true);
             over.addEventListener('pointerdown', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); }, true);
             over.addEventListener('pointerup', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); }, true);
             over.addEventListener('click', (ev)=>{ ev.stopPropagation(); ev.preventDefault(); }, true);
-            // allow keyboard and other inputs to work as normal
             document.documentElement.appendChild(over);
             place();
-            // update overlay on resize/scroll
             const upd = () => { place(); };
             window.addEventListener('resize', upd);
             window.addEventListener('scroll', upd, true);
-            // small visual dim to indicate focus-mode
             try { over.style.boxShadow = '0 0 0 9999px rgba(0,0,0,0.12) inset'; } catch(e){}
-            // show overlay message near the video
             showOverlay('locked', lockedVideoRef || target, 'Focus mode');
         } else {
-            // remove overlay and restore
             siteLocked = false;
             const el = document.getElementById('vc_focus_overlay');
-            if (el) {
-                try { el.parentNode.removeChild(el); } catch(e){}
-            }
+            if (el) { try { el.parentNode.removeChild(el); } catch(e){} }
             lockedVideoRef = null;
             showOverlay('locked', pickTargetVideo(), 'Focus off');
         }
     } catch(e) { console.warn('VC: toggleSiteLock error', e); }
 }
 
-
-
-// Save/restore for potential future per-site storage could be added here
-// ---------------- End feature additions ----------------
+// ---------------- Initialization ----------------
 
 (async function init(){
-    const data = await chrome.storage.local.get([STORAGE_KEY]);
-    config = { ...DEFAULT_CONFIG, ...(data[STORAGE_KEY] || {}) };
-
-    config.shortcuts = { ...DEFAULT_CONFIG.shortcuts, ...(data[STORAGE_KEY]?.shortcuts || {}) };
-    config.settings = { ...DEFAULT_CONFIG.settings, ...(data[STORAGE_KEY]?.settings || {}) };
-    config.lastAutoResolution = data[STORAGE_KEY]?.lastAutoResolution ?? config.lastAutoResolution;
-    config.sessionStats = { ...DEFAULT_CONFIG.sessionStats, ...(data[STORAGE_KEY]?.sessionStats || {}) };
-
-    // normalize volume stored value if it's in 0..1 (older versions) -> convert to percent
-    if (config.settings.volume && config.settings.volume <= 1) {
-        config.settings.volume = Math.round(config.settings.volume * 100);
+    try {
+        const data = await chrome.storage.local.get([STORAGE_KEY]);
+        // Merge saved data into the already-initialized default config
+        if (data[STORAGE_KEY]) {
+            const saved = data[STORAGE_KEY];
+            config.shortcuts = { ...config.shortcuts, ...(saved.shortcuts || {}) };
+            config.settings = { ...config.settings, ...(saved.settings || {}) };
+            config.lastAutoResolution = saved.lastAutoResolution ?? config.lastAutoResolution;
+            config.sessionStats = { ...config.sessionStats, ...(saved.sessionStats || {}) };
+            
+            // Normalize volume
+            if (config.settings.volume && config.settings.volume <= 1) {
+                config.settings.volume = Math.round(config.settings.volume * 100);
+            }
+        }
+    } catch(e) {
+        console.warn('VC: Config load error (using defaults)', e);
     }
 
     setupGlobalKeyHandler();
     monitorVideos();
 
-    // periodic enforcement + lightweight session stats (only when tab visible)
     let lastStatsSaveMin = 0;
     setInterval(() => {
         if (document.visibilityState !== 'visible') return;
@@ -725,40 +719,47 @@ function toggleSiteLock(video) {
     console.log('Video Commander: initialized');
 })();
 
-// helper: check if event is space key across browsers
 function isSpaceEvent(e) {
     return e.key === ' ' || e.code === 'Space' || e.key === 'Spacebar';
 }
 
-// --- Video discovery & targeting ---
 function pickTargetVideo() {
-    // If site locked and we still have a reference that is in the DOM, use that
     try {
         if (siteLocked && lockedVideoRef && document.contains(lockedVideoRef)) return lockedVideoRef;
-    } catch(e){}
 
-    // 1. Hovered video
-    const hovered = document.querySelectorAll('video:hover');
-    if (hovered.length) return hovered[0];
+        // 0. Explicit YouTube Main Video (avoid ad/preview videos)
+        const ytMain = document.querySelector('.html5-main-video');
+        if (ytMain && isElementVisible(ytMain)) return ytMain;
 
-    // 2. Playing video (most likely target)
-    const playing = Array.from(document.getElementsByTagName('video')).find(v => !v.paused && v.readyState > 1);
-    if (playing) return playing;
+        // 1. Hovered video
+        const hovered = document.querySelectorAll('video:hover');
+        if (hovered.length) return hovered[0];
 
-    // 3. Visible video
-    const vids = Array.from(document.getElementsByTagName('video'));
-    for (const v of vids) {
-        if (isElementVisible(v)) return v;
-    }
+        // 2. Playing video
+        const playing = Array.from(document.getElementsByTagName('video')).find(v => !v.paused && v.readyState > 1 && isElementVisible(v));
+        if (playing) return playing;
 
-    // 4. any video
-    return vids[0] || null;
+        // 3. Visible video (largest)
+        const vids = Array.from(document.getElementsByTagName('video')).filter(isElementVisible);
+        if (vids.length) {
+            // Return largest visible video area
+            return vids.reduce((prev, curr) => {
+                const pr = prev.getBoundingClientRect();
+                const cr = curr.getBoundingClientRect();
+                return (pr.width * pr.height) > (cr.width * cr.height) ? prev : curr;
+            });
+        }
+        
+        // 4. Fallback
+        return document.getElementsByTagName('video')[0] || null;
+    } catch(e) { return null; }
 }
 
 function isElementVisible(el) {
     try {
         const rect = el.getBoundingClientRect();
-        return rect.width > 10 && rect.height > 10 && rect.bottom >= 0 && rect.top <= (window.innerHeight || document.documentElement.clientHeight);
+        return rect.width > 10 && rect.height > 10 && 
+               rect.bottom >= 0 && rect.top <= (window.innerHeight || document.documentElement.clientHeight);
     } catch (e) { return false; }
 }
 
@@ -766,23 +767,12 @@ function isElementVisible(el) {
 function showOverlay(kind, video, value) {
     try {
         if (!video) return;
-        // remove old
         if (activeOverlay) { activeOverlay.remove(); activeOverlay = null; }
 
         const iconMap = {
-            vol: '🔊',
-            mute: '🔇',
-            seek: '►►',
-            seekBack: '◄◄',
-            speed: '⚡',
-            play: '▶',
-            pause: '❚❚',
-            percent: '🔢',
-            locked: '🔒',
-            unlocked: '🔓',
-            pin: '📌',
-            brightness: '☀',
-            quality: '📐'
+            vol: '🔊', mute: '🔇', seek: '►►', seekBack: '◄◄', speed: '⚡',
+            play: '▶', pause: '❚❚', percent: '🔢', locked: '🔒', unlocked: '🔓',
+            pin: '📌', brightness: '☀', quality: '📐'
         };
 
         const overlay = document.createElement('div');
@@ -792,7 +782,6 @@ function showOverlay(kind, video, value) {
         icon.className = 'vc-icon';
         icon.textContent = iconMap[kind] || '🎬';
 
-        // if we're showing a numeric keycap or custom emoji, prefer the provided value
         if (kind === 'num' && value) { icon.textContent = value; overlay.classList.add('num'); }
         if (kind === 'pin') { icon.textContent = iconMap['pin']; }
 
@@ -822,74 +811,67 @@ function showOverlay(kind, video, value) {
         document.body.appendChild(overlay);
         activeOverlay = overlay;
 
-        // DYNAMIC GLOW: volume (>100 green, >150 red), speed (>2 green, >3 red), brightness (>150% red, <50% green)
-            overlay.classList.add('dynamic-glow');
-            try {
-                const blendColor = (c1, c2, t) => [
-                    Math.round(c1[0] + (c2[0]-c1[0]) * t),
-                    Math.round(c1[1] + (c2[1]-c1[1]) * t),
-                    Math.round(c1[2] + (c2[2]-c1[2]) * t)
-                ];
-                let colorRGB = null, darkness = 0;
-                if (kind === 'vol' && value) {
-                    const v = Number(value) || 0;
-                    if (v > 100) {
-                        darkness = Math.min(1, (v - 100) / 100);
-                        if (v <= 150) colorRGB = [0,160,0];
-                        else colorRGB = blendColor([0,160,0],[160,0,0], Math.min(1, (v - 150) / 50));
-                    }
-                } else if (kind === 'speed' && value) {
-                    const sp = Number(value) || 0;
-                    if (sp > 2) {
-                        darkness = Math.min(1, (sp - 2) / 2);
-                        if (sp <= 3) colorRGB = [0,160,0];
-                        else colorRGB = blendColor([0,160,0],[160,0,0], Math.min(1, (sp - 3) / 1));
-                    }
-                } else if (kind === 'brightness' && value != null) {
-                    const b = Number(value) || 100;
-                    if (b > 150) {
-                        darkness = Math.min(1, (b - 150) / 50);
-                        colorRGB = [200, 60, 60];
-                    } else if (b < 50) {
-                        darkness = Math.min(1, (50 - b) / 50);
-                        colorRGB = [60, 180, 80];
-                    }
+        // Dynamic Glow
+        overlay.classList.add('dynamic-glow');
+        try {
+            const blendColor = (c1, c2, t) => [
+                Math.round(c1[0] + (c2[0]-c1[0]) * t),
+                Math.round(c1[1] + (c2[1]-c1[1]) * t),
+                Math.round(c1[2] + (c2[2]-c1[2]) * t)
+            ];
+            let colorRGB = null, darkness = 0;
+            if (kind === 'vol' && value) {
+                const v = Number(value) || 0;
+                if (v > 100) {
+                    darkness = Math.min(1, (v - 100) / 100);
+                    if (v <= 150) colorRGB = [0,160,0];
+                    else colorRGB = blendColor([0,160,0],[160,0,0], Math.min(1, (v - 150) / 50));
                 }
-                if (colorRGB) {
-                    const boxAlpha = 0.08 + (0.6 * Math.min(1, darkness));
-                    const borderAlpha = 0.08 + (0.55 * Math.min(1, darkness));
-                    overlay.style.boxShadow = `0 10px 40px rgba(${colorRGB[0]},${colorRGB[1]},${colorRGB[2]},${boxAlpha})`;
-                    overlay.style.border = `1px solid rgba(${colorRGB[0]},${colorRGB[1]},${colorRGB[2]},${borderAlpha})`;
-                } else {
-                    overlay.style.boxShadow = ''; overlay.style.border = '';
+            } else if (kind === 'speed' && value) {
+                const sp = Number(value) || 0;
+                if (sp > 2) {
+                    darkness = Math.min(1, (sp - 2) / 2);
+                    if (sp <= 3) colorRGB = [0,160,0];
+                    else colorRGB = blendColor([0,160,0],[160,0,0], Math.min(1, (sp - 3) / 1));
                 }
-            } catch(e) { /* ignore */ }
+            } else if (kind === 'brightness' && value != null) {
+                const b = Number(value) || 100;
+                if (b > 150) {
+                    darkness = Math.min(1, (b - 150) / 50);
+                    colorRGB = [200, 60, 60];
+                } else if (b < 50) {
+                    darkness = Math.min(1, (50 - b) / 50);
+                    colorRGB = [60, 180, 80];
+                }
+            }
+            if (colorRGB) {
+                const boxAlpha = 0.08 + (0.6 * Math.min(1, darkness));
+                const borderAlpha = 0.08 + (0.55 * Math.min(1, darkness));
+                overlay.style.boxShadow = `0 10px 40px rgba(${colorRGB[0]},${colorRGB[1]},${colorRGB[2]},${boxAlpha})`;
+                overlay.style.border = `1px solid rgba(${colorRGB[0]},${colorRGB[1]},${colorRGB[2]},${borderAlpha})`;
+            } else {
+                overlay.style.boxShadow = ''; overlay.style.border = '';
+            }
+        } catch(e) { }
 
-
-        // add 'boost' class for volume >100
         if (kind === 'vol' && value && value > 100) overlay.classList.add('boost');
         else overlay.classList.remove('boost');
 
-        // position at top-center of video (measure after append)
         const rect = video.getBoundingClientRect();
         const marginTop = 12;
         const ovRect = overlay.getBoundingClientRect();
         let left = rect.left + Math.max(0, (rect.width - ovRect.width) / 2);
         let top = rect.top + marginTop;
-        // ensure overlay stays within viewport horizontally
         const maxLeft = Math.max(8, (window.innerWidth || document.documentElement.clientWidth) - ovRect.width - 8);
         left = Math.min(Math.max(8, left), maxLeft);
-        if (top < 8) top = rect.top + 8; // avoid negative
+        if (top < 8) top = rect.top + 8;
         overlay.style.left = left + 'px';
         overlay.style.top = top + 'px';
 
-        // small show animation
         requestAnimationFrame(() => { overlay.classList.add('vc-show'); });
-
-        // remove after timeout (longer for percent/seek)
         const timeout = (kind === 'percent' || kind === 'seek' || kind === 'seekBack') ? 1100 : 800;
         setTimeout(() => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); if (activeOverlay === overlay) activeOverlay = null; }, timeout);
-    } catch (e) { console.warn('Overlay failed', e); }
+    } catch (e) {}
 }
 
 // ----- Help Center (F1) -----
@@ -914,7 +896,7 @@ function getHelpShortcutsList() {
         { key: 'Z', desc: 'Undo last action' },
         { key: 'X', desc: 'Focus lock on video' },
         { key: 'Shift + R', desc: 'Reset speed, volume, brightness' },
-        { key: 'Z (after reset)', desc: 'Undo reset' },
+        { key: 'Shift + Z', desc: 'Undo reset' },
         { key: '−', desc: 'Decrease brightness' },
         { key: '=', desc: 'Increase brightness' },
         { key: ";", desc: 'Decrease video quality' },
@@ -930,16 +912,9 @@ function getHelpShortcutsList() {
 }
 
 function showHelpOverlay() {
-    if (helpOverlayVisible) {
-        hideHelpOverlay();
-        return;
-    }
+    if (helpOverlayVisible) { hideHelpOverlay(); return; }
     const wrap = document.getElementById('vc-help-overlay');
-    if (wrap) {
-        wrap.classList.add('vc-show');
-        helpOverlayVisible = true;
-        return;
-    }
+    if (wrap) { wrap.classList.add('vc-show'); helpOverlayVisible = true; return; }
     const overlay = document.createElement('div');
     overlay.id = 'vc-help-overlay';
     overlay.setAttribute('aria-label', 'HotPlay shortcuts');
@@ -968,9 +943,7 @@ function showHelpOverlay() {
     overlay.classList.add('vc-show');
     const onKey = (e) => {
         if (e.key === 'Escape' || e.key === 'F1') {
-            hideHelpOverlay();
-            e.preventDefault();
-            e.stopPropagation();
+            hideHelpOverlay(); e.preventDefault(); e.stopPropagation();
         }
     };
     window.addEventListener('keydown', onKey, true);
@@ -990,18 +963,15 @@ function hideHelpOverlay() {
 // --- Keyboard handling ---
 function setupGlobalKeyHandler() {
     const handler = (e) => {
+        // Safe check: config must exist, but we init it synchronously now
         if (!config) return;
 
         const key = e.key;
-        // 1. Context Check: Don't block typing in inputs
         const activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
         if (['input','textarea','select'].includes(activeTag) || document.activeElement?.isContentEditable) return;
 
-        // F1 works even without a video (show help)
         if (key === 'F1') {
-            e.preventDefault();
-            e.stopPropagation();
-            e.stopImmediatePropagation();
+            e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
             if (e.type === 'keydown') showHelpOverlay();
             return;
         }
@@ -1016,38 +986,48 @@ function setupGlobalKeyHandler() {
         const isHotPlayOnly = key === 'F1' || key === '/' || (e.shiftKey && key.toLowerCase() === 'r') || key === '-' || key === '=' ||
             key === ';' || key === "'" ||
             (e.shiftKey && (key === ';' || key === "'" || key === 'ArrowLeft' || key === 'ArrowRight'));
-        // 2. Identify if this is a key we care about (extension overrides site when conflicting)
+        
         const isOurKey = normalizedBindings.includes(key.toLowerCase()) || isNumber || isSpace || ['b', 'z', 'x'].includes(key.toLowerCase()) || (isHotPlayOnly && key !== 'F1');
 
         if (isOurKey) {
-            // 3. NUCLEAR OPTION: Stop the website from ever seeing this event
-            e.preventDefault();
-            e.stopPropagation();
-            e.stopImmediatePropagation();
-
-            // Only process logic on keydown to avoid double-triggering
+            e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
             if (e.type === 'keydown') {
-                handleLogic(video, key, bindings, isNumber, isSpace, e);
+                try {
+                    handleLogic(video, key, bindings, isNumber, isSpace, e);
+                } catch(err) {
+                    console.warn('VC: Key handler crash recovered', err);
+                }
             }
         }
     };
-
-    // Attach to both down and up, using useCapture = true
     window.addEventListener('keydown', handler, true);
     window.addEventListener('keyup', handler, true);
 }
 
-// Move your logic into a separate helper to keep the handler clean
 function handleLogic(video, key, bindings, isNumber, isSpace, e) {
     const matchKey = (k) => (k.length === 1 ? key.toLowerCase() === k.toLowerCase() : key === k);
     const shift = e && e.shiftKey;
 
-    // --- F1 Help ---
-    if (key === 'F1') {
-        showHelpOverlay();
+    if (key === 'F1') { showHelpOverlay(); return; }
+    
+    // --- Play/Pause (Space / k) ---
+    // Moved up for responsiveness
+    if (matchKey(bindings.playPause) || isSpace) {
+        if (video.paused) {
+            pushHistory(video, {type:'play', prevPaused: true});
+            // Auto-resume audio context if needed
+            const st = vcState.get(video);
+            if(st && st.audioCtx && st.audioCtx.state === 'suspended') { st.audioCtx.resume().catch(()=>{}); }
+            
+            video.play().then(() => showOverlay('play', video, null)).catch(() => {});
+        } else {
+            pushHistory(video, {type:'play', prevPaused: false});
+            video.pause();
+            showOverlay('pause', video, null);
+        }
         return;
     }
-    // --- / Frame step ---
+
     if (key === '/') {
         const wasPaused = video.paused;
         video.pause();
@@ -1057,7 +1037,6 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
         if (!wasPaused) setTimeout(() => { video.play().catch(() => {}); }, 120);
         return;
     }
-    // --- Shift+R Reset ---
     if (e.shiftKey && key.toLowerCase() === 'r') {
         const prevSpeed = video.playbackRate || 1;
         const prevVol = getVolumePercent(video);
@@ -1072,7 +1051,6 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
         saveConfig();
         return;
     }
-    // --- − / + Brightness ---
     if (key === '-') {
         const cur = getBrightness(video);
         const next = Math.max(0, cur - 10);
@@ -1087,7 +1065,6 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
         showOverlay('brightness', video, next);
         return;
     }
-    // --- ; / ' Quality: ; = decrease, ' = increase (Auto baseline, never 144p) ---
     if (key === ';' && !shift) {
         showOverlay('quality', video, 'Quality…');
         changeVideoQuality(true, video).then((ok) => {
@@ -1124,7 +1101,6 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
         });
         return;
     }
-    // --- Shift+← / Shift+→ Chapters ---
     if (shift && key === 'ArrowLeft') {
         if (!goToPrevChapter(video)) showOverlay('seekBack', video, 'No prev chapter');
         return;
@@ -1133,24 +1109,9 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
         if (!goToNextChapter(video)) showOverlay('seek', video, 'No next chapter');
         return;
     }
-
-    // --- B Key ---
-    if (key.toLowerCase() === 'b') {
-        // toggles marker: first press sets marker, second press jumps to it
-        toggleMarker(video);
-        return;
-    }
-    // --- Z Key ---
-    if (key.toLowerCase() === 'z') {
-        undoLast(video);
-        return;
-    }
-    // --- X Key ---
-    if (key.toLowerCase() === 'x') {
-        toggleSiteLock(video);
-        return;
-    }
-    // --- Fullscreen (F) ---
+    if (key.toLowerCase() === 'b') { toggleMarker(video); return; }
+    if (key.toLowerCase() === 'z') { undoLast(video); return; }
+    if (key.toLowerCase() === 'x') { toggleSiteLock(video); return; }
     if (matchKey(bindings.fullscreen)) {
         try {
             const doc = document;
@@ -1164,7 +1125,6 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
         } catch (e) { showOverlay('play', video, 'Fullscreen unavailable'); }
         return;
     }
-    // --- Picture-in-Picture (P) ---
     if (matchKey(bindings.pip)) {
         try {
             if (document.pictureInPictureElement) {
@@ -1177,31 +1137,18 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
         } catch (e) { showOverlay('play', video, 'PiP unavailable'); }
         return;
     }
-    // --- Numbers ---
     if (isNumber) {
-		const n = parseInt(key);
-		const pct = n * 10;
-
-		if (video.duration) {
-			const targetTime = video.duration * (pct / 100);
-			
-			pushHistory(video, {
-				type: 'seek', 
-				prev: video.currentTime, 
-				next: targetTime
-			});
-
-			video.currentTime = targetTime;
-
-			// Pure text overlay: "50%" or "0%"
-			showOverlay('num', video, `${pct}%`);
-			
-			saveConfig();
-		}
-		return;
-	}
-
-    // --- Standard Shortcuts ---
+        const n = parseInt(key);
+        const pct = n * 10;
+        if (video.duration) {
+            const targetTime = video.duration * (pct / 100);
+            pushHistory(video, { type: 'seek', prev: video.currentTime, next: targetTime });
+            video.currentTime = targetTime;
+            showOverlay('num', video, `${pct}%`);
+            saveConfig();
+        }
+        return;
+    }
     if (matchKey(bindings.volUp)) {
         let prevVol = getVolumePercent(video);
         let newVol = Math.min(200, (config.settings.volume||40) + 5);
@@ -1256,21 +1203,12 @@ function handleLogic(video, key, bindings, isNumber, isSpace, e) {
         pushHistory(video, {type:'seek', prev: video.currentTime, next: Math.min(video.duration||Infinity, video.currentTime + 5)});
         video.currentTime = Math.min(video.duration||Infinity, video.currentTime + 5);
         showOverlay('seek', video, 5);
-    } else if (matchKey(bindings.playPause) || isSpace) {
-        if (video.paused) {
-            pushHistory(video, {type:'play', prevPaused: true});
-            video.play().then(() => showOverlay('play', video, null)).catch(() => {});
-        } else {
-            pushHistory(video, {type:'play', prevPaused: false});
-            video.pause();
-            showOverlay('pause', video, null);
-        }
     }
 }
 
 // --- Persistence ---
 function saveConfig() {
-    chrome.storage.local.set({ [STORAGE_KEY]: config });
+    if (config) chrome.storage.local.set({ [STORAGE_KEY]: config });
 }
 
 function enforceSettings(video) {
@@ -1279,14 +1217,26 @@ function enforceSettings(video) {
         if (Math.abs((video.playbackRate||1) - (config.settings.speed||1)) > 0.05) {
             video.playbackRate = config.settings.speed || 1;
         }
-        if (typeof config.settings.volume !== 'undefined') {
-            try { applyVolumePercent(video, config.settings.volume); } catch(e){}
+        
+        // Optimize: check before applying expensive audio op
+        const currentVol = getVolumePercent(video);
+        const targetVol = config.settings.volume;
+        // Only apply if mismatch or if we need to ensure boost logic is active for >100
+        if (typeof targetVol !== 'undefined' && (currentVol !== targetVol || targetVol > 100)) {
+            // Apply, but don't force creation of audio context if we are just maintaining standard volume
+            // We only force create if user explicitly interacts, which calls applyVolumePercent directly.
+            // Here in "enforce", we only fix standard props unless we already have audio nodes.
+            const st = vcState.get(video);
+            if (targetVol <= 100 || (st && st.gainNode)) {
+                 applyVolumePercent(video, targetVol);
+            }
         }
+
         video.muted = !!config.settings.muted;
         if (typeof config.settings.brightness !== 'undefined') {
             try { applyBrightness(video, config.settings.brightness); } catch(e){}
         }
-    } catch (e) { console.warn('enforceSettings failed', e); }
+    } catch (e) { }
 }
 
 // --- Observe DOM for dynamic videos ---
@@ -1295,24 +1245,28 @@ function monitorVideos() {
         try {
             if (v.dataset.vcAttached) return;
             v.dataset.vcAttached = '1';
-            // apply current settings
+            
+            // Apply simple settings immediately (speed, mute)
             if (config.settings?.speed) v.playbackRate = config.settings.speed;
-            if (typeof config.settings?.volume !== 'undefined') applyVolumePercent(v, config.settings.volume);
             v.muted = !!config.settings.muted;
             if (typeof config.settings?.brightness !== 'undefined') applyBrightness(v, config.settings.brightness);
 
-            // keep enforcement on play in case site overwrites
+            // Volume: If <= 100, just set it. If > 100, we DO NOT auto-create AudioContext to avoid startup lag/crash.
+            // We wait for user interaction to boost.
+            if (config.settings.volume <= 100) {
+                 v.volume = config.settings.volume / 100;
+            }
+
             v.addEventListener('play', () => enforceSettings(v));
 
-            // cleanup on element removal: when video removed from DOM, release audio nodes reference
             const observer = new MutationObserver((mutations) => {
                 for (const m of mutations) {
                     for (const node of m.removedNodes) {
                         if (node === v || (node.contains && node.contains(v))) {
-                            // video removed; let GC handle AudioContext but null references
                             const st = vcState.get(v);
-                            if (st && st.gainNode) {
-                                try { st.gainNode.disconnect(); } catch(e){}
+                            if (st) {
+                                if (st.gainNode) try { st.gainNode.disconnect(); } catch(e){}
+                                if (st.audioCtx && st.audioCtx.state !== 'closed') try { st.audioCtx.close(); } catch(e){}
                             }
                             vcState.delete(v);
                             observer.disconnect();
@@ -1322,10 +1276,9 @@ function monitorVideos() {
             });
             observer.observe(document.documentElement || document.body, { childList: true, subtree: true });
 
-        } catch (e) { /* ignore */ }
+        } catch (e) { }
     };
 
-    // initial attach
     const videos = Array.from(document.getElementsByTagName('video'));
     videos.forEach(markAndAttach);
 
@@ -1343,16 +1296,16 @@ function monitorVideos() {
     observer.observe(document.documentElement || document.body, { childList: true, subtree: true });
 }
 
-// Reload config when popup saves (so shortcuts update without refresh)
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg && msg.type === 'configUpdated') {
         chrome.storage.local.get([STORAGE_KEY]).then((data) => {
-            const prev = config;
-            config = { ...DEFAULT_CONFIG, ...(data[STORAGE_KEY] || {}) };
-            config.shortcuts = { ...DEFAULT_CONFIG.shortcuts, ...(data[STORAGE_KEY]?.shortcuts || {}) };
-            config.settings = { ...DEFAULT_CONFIG.settings, ...(data[STORAGE_KEY]?.settings || {}) };
-            config.lastAutoResolution = data[STORAGE_KEY]?.lastAutoResolution ?? config.lastAutoResolution;
-            config.sessionStats = { ...DEFAULT_CONFIG.sessionStats, ...(data[STORAGE_KEY]?.sessionStats || {}) };
+            if (data[STORAGE_KEY]) {
+                const saved = data[STORAGE_KEY];
+                config.shortcuts = { ...DEFAULT_CONFIG.shortcuts, ...(saved.shortcuts || {}) };
+                config.settings = { ...DEFAULT_CONFIG.settings, ...(saved.settings || {}) };
+                config.lastAutoResolution = saved.lastAutoResolution ?? config.lastAutoResolution;
+                config.sessionStats = { ...DEFAULT_CONFIG.sessionStats, ...(saved.sessionStats || {}) };
+            }
             sendResponse({ ok: true });
         });
         return true;
